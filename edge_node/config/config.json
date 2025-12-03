@@ -1,0 +1,28 @@
+{
+  "node_name": "dev-1",
+  "firebase_db_url": "https://YOUR-PROJECT-ID.firebaseio.com",
+  "firebase_storage_bucket": "YOUR-PROJECT-ID.appspot.com",
+  "cameras": [
+    {
+      "id": "cam_01",
+      "source": "rtsp://admin:1234@192.168.1.10",
+      "type": "offstreet",
+      "polygon_file": "config/polygons/cam_01.json",
+      "enabled": false
+    },
+    {
+      "id": "cam_02",
+      "source": "0",
+      "type": "onstreet",
+      "polygon_file": "config/polygons/cam_02.json",
+      "enabled": false
+    },
+    {
+      "id": "cam_03",
+      "source": "0",
+      "type": "gate",
+      "polygon_file": "config/polygons/cam_02.json",
+      "enabled": true
+    }
+  ]
+}

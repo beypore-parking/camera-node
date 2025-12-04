@@ -9,7 +9,7 @@ from datetime import datetime
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 import firebase_admin
-from firebase_admin import credentials, db
+from firebase_admin import credentials, db, storage
 
 # worker functions stub for now (assume these accept `stop_event` as the last argument)
 from workers.offstreet import run_offstreet_worker
@@ -92,18 +92,39 @@ def handle_sigterm(signum, frame):
 signal.signal(signal.SIGINT, handle_sigterm)
 signal.signal(signal.SIGTERM, handle_sigterm)
 
-
 # --- firebase setp ---
 def init_firebase():
     if not firebase_admin._apps:
         try:
             cred = credentials.Certificate(CREDS_PATH)
             firebase_admin.initialize_app(cred, {
-                'databaseURL': node_config.get('firebase_db_url')
+                'databaseURL': node_config.get('firebase_db_url'),
+                'storageBucket': node_config.get('firebase_storage_bucket') 
             })
             logger.info("Firebase Connected Successfully.")
         except Exception as e:
             logger.error(f"Failed to connect to Firebase: {e}")
+
+# func to start single camera
+def start_single_camera(cam_config):
+    """Helper to start/restart a specific camera process."""
+    p_id = cam_config['id']
+    p_type = cam_config['type']
+    
+    target_func = None
+    if p_type == "offstreet": target_func = run_offstreet_worker
+    elif p_type == "onstreet": target_func = run_onstreet_worker
+    elif p_type == "gate": target_func = run_gate_worker
+    
+    if target_func:
+        p = multiprocessing.Process(
+            target=target_func,
+            args=(cam_config, data_queue, node_config['node_name'], stop_event),
+            name=f"Worker-{p_id}-{p_type.upper()}"
+        )
+        p.start()
+        processes[p_id] = p
+        logger.info(f"Worker {p_id} RESTARTED.")
 
 # --- process manager ---
 def start_camera_processes():
@@ -150,30 +171,79 @@ def start_camera_processes():
 
 # --- data sync loop ---
 def firebase_sync_loop():
-    """Reads from the multiprocessing Queue and updates Firebase."""
+    """Reads queue, uploads snapshots to Storage, and status to DB."""
+    node_name = node_config.get('node_name')
+    
     # check the stop_event regularly to exit gracefully
-    while not stop_event.is_set(): 
+    while not stop_event.is_set():
         try:
-            # get data from workers
             if not data_queue.empty():
+                # get data from workers
                 payload = data_queue.get()
                 cam_id = payload.get('id')
+                p_type = payload.get('type', 'status') # Default to status
                 data = payload.get('data')
-                
+
                 # push to Firebase
-                if firebase_admin._apps and node_config.get('node_name'):
-                    ref = db.reference(f"parking_locations/{node_config['node_name']}/{cam_id}")
-                    ref.update(data)
-                    # logger.debug(f"Synced data for {cam_id}")
+                if not node_name: continue
+
+                # --- CASE A: SNAPSHOT (Image Upload) ---
+                if p_type == 'snapshot':
+                    image_bytes = data.get('image_bytes')
+                    timestamp = data.get('timestamp')
+                    
+                    # 1. Upload to Storage
+                    bucket = storage.bucket()
+                    blob_path = f"snapshots/{node_name}/{cam_id}.jpg"
+                    blob = bucket.blob(blob_path)
+                    blob.upload_from_string(image_bytes, content_type='image/jpeg')
+                    blob.make_public() 
+                    
+                    # 2. Update DB with URL
+                    ref = db.reference(f"locations/{node_name}/live_status/{cam_id}/snapshot")
+                    ref.update({
+                        "url": blob.public_url,
+                        "timestamp": timestamp
+                    })
+                    logger.info(f"Snapshot uploaded for {cam_id}")
+
+                # --- CASE B: GATE EVENT (History Log) ---
+                elif p_type == 'gate_event':
+                    # Push to history log (generates unique ID)
+                    ref = db.reference(f"locations/{node_name}/gate_events/{cam_id}")
+                    ref.push(data)
+
+                # --- CASE C: LIVE STATUS (Occupancy/Counts) ---
                 else:
-                    # Use a warning for the first few times, then maybe silent, 
-                    # but for now, log it if DB is not ready.
-                    logger.warning(f"Skipping Firebase sync for {cam_id}. DB not ready or node_name missing.")
-                
-            time.sleep(0.1) # prevent CPU spinning and allows stop_event check to be frequent
+                    # Update live status (Overwrites previous state)
+                    ref = db.reference(f"locations/{node_name}/live_status/{cam_id}")
+                    ref.update(data)
+
+            time.sleep(0.05)
         except Exception as e:
             logger.error(f"Sync Error: {e}")
             time.sleep(1)
+
+# --- heartbeat loop ---
+def heartbeat_loop():
+    """Updates system_health in Firebase every 60 seconds."""
+    node_name = node_config.get('node_name')
+    if not node_name: 
+        return
+
+    logger.info("Heartbeat thread started.")
+    while not stop_event.is_set():
+        try:
+            if firebase_admin._apps:
+                ref = db.reference(f"locations/{node_name}/system_health")
+                ref.update({
+                    "status": "online",
+                    "last_seen": datetime.now().isoformat(),
+                })
+        except Exception as e:
+            logger.error(f"Heartbeat failed: {e}")
+        
+        time.sleep(60)
 
 # --- fastapi lifecycle ---
 @asynccontextmanager
@@ -215,11 +285,15 @@ async def lifespan(app: FastAPI):
     init_firebase()
     start_camera_processes()
     
-    # 4. start sync thread (background)
+    # 4. start sync thread and heartbeat thread (background)
     sync_thread = threading.Thread(target=firebase_sync_loop, daemon=True)
     sync_thread.start()
     logger.info("Firebase sync thread started.")
-    
+
+    hb_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    hb_thread.start()
+    logger.info("Heartbeat sync thread started.")
+
     yield # server is running...
     
     # 5. cleanup on shutdown (uvicorn graceful shutdown path)
@@ -244,17 +318,23 @@ def health_check():
 
 @app.post("/restart/{cam_id}")
 def restart_camera(cam_id: str):
+    # 1. Kill existing
     if cam_id in processes:
         p = processes[cam_id]
         if p.is_alive():
             p.terminate()
             p.join()
-        
-        # restart logic will would go here (re-spawning the process)
-        # for now terminate it for safety
-        
-        return {"status": "Terminated", "id": cam_id, "message": "Process terminated. Requires manual re-spawn."}
-    return {"error": "Camera ID not found"}
+    
+    # 2. Find config for this camera
+    # (In the future, we fetch this from Firebase 'config' path)
+    target_cam = next((c for c in node_config.get('cameras', []) if c['id'] == cam_id), None)
+    
+    if target_cam:
+        # 3. Spawn new
+        start_single_camera(target_cam)
+        return {"status": "Restarted", "id": cam_id}
+    
+    return {"error": "Camera Config not found"}
 
 if __name__ == "__main__":
     import uvicorn

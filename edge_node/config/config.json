@@ -1,21 +1,21 @@
 {
   "node_name": "dev-1",
-  "firebase_db_url": "https://YOUR-PROJECT-ID.firebaseio.com",
-  "firebase_storage_bucket": "YOUR-PROJECT-ID.appspot.com",
+  "firebase_db_url": "https://parking-app-cd0f0-default-rtdb.firebaseio.com/",
+  "firebase_storage_bucket": "https://www.google.com/url?sa=E&source=gmail&q=parking-app-cd0f0.appspot.com",
   "cameras": [
     {
       "id": "cam_01",
       "source": "rtsp://admin:1234@192.168.1.10",
       "type": "offstreet",
       "polygon_file": "config/polygons/cam_01.json",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "cam_02",
       "source": "0",
       "type": "onstreet",
       "polygon_file": "config/polygons/cam_02.json",
-      "enabled": false
+      "enabled": true
     },
     {
       "id": "cam_03",

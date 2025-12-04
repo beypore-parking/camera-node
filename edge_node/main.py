@@ -1,9 +1,3 @@
-# the main functions of this fastapi orchestrator are:
-# - starting processes for each camera
-# - connecting to firebase and sending info back and syncing
-# - logging
-# - graceful shutdown
-
 import os
 import json
 import time
@@ -30,8 +24,9 @@ CREDS_PATH = "config/serviceAccountKey.json"
 class NodeFormatter(logging.Formatter):
     def format(self, record):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        location = getattr(record, 'location_name', "UNKNOWN")
-        return f"[{timestamp} - ORCHESTRATOR - {location}] {record.getMessage()}"
+        # Use getattr with a default in case the extra dict hasn't been added yet
+        location = getattr(record, 'location_name', "ORCHESTRATOR")
+        return f"[{timestamp} - {location}] {record.getMessage()}"
 
 logger = logging.getLogger("Orchestrator")
 handler = logging.StreamHandler()
@@ -183,8 +178,12 @@ def firebase_sync_loop():
 # --- fastapi lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. load config
+    # FIX: Moved global declarations to the top to resolve SyntaxError
     global node_config
+    global logger
+    global sync_thread
+    
+    # 1. load config
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r') as f:
@@ -209,7 +208,6 @@ async def lifespan(app: FastAPI):
     
     # set logger context
     # Re-initialize logger adapter after node_name is set
-    global logger
     logger_extra = {'location_name': node_config['node_name']}
     logger = logging.LoggerAdapter(logging.getLogger("Orchestrator"), logger_extra)
 
@@ -218,7 +216,6 @@ async def lifespan(app: FastAPI):
     start_camera_processes()
     
     # 4. start sync thread (background)
-    global sync_thread
     sync_thread = threading.Thread(target=firebase_sync_loop, daemon=True)
     sync_thread.start()
     logger.info("Firebase sync thread started.")
@@ -234,6 +231,10 @@ app = FastAPI(lifespan=lifespan)
 # --- api routes ---
 @app.get("/")
 def home():
+    # Use logger here for the adapter to work consistently, but access the base logger if adapter fails
+    current_logger = logger if isinstance(logger, logging.LoggerAdapter) else logging.getLogger("Orchestrator")
+    current_logger.info("Root path accessed.")
+    
     return {"status": "Online", "node": node_config.get("node_name"), "sync_thread_alive": sync_thread.is_alive() if sync_thread else False}
 
 @app.get("/health")
@@ -259,4 +260,4 @@ if __name__ == "__main__":
     import uvicorn
     # uvicorn runs FastAPI, and the lifespan context manager handles the cleanup.
     # signal handlers are primarily for non-uvicorn ways of stopping the script.
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

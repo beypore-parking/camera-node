@@ -1,10 +1,27 @@
 import time
+import logging
 from datetime import datetime
+import signal
 
-def run_gate_worker(config, queue, node_name):
+worker_logger = logging.getLogger("Orchestrator")
+
+def run_gate_worker(config, data_queue, node_name, stop_event):
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    except ValueError:
+        # Ignore if this is not a main thread in this process
+        pass
+    
     camera_id = config['id']
+
+    log = logging.LoggerAdapter(worker_logger, {'location_name': f"{node_name}:{camera_id}"})
     print(f"[{datetime.now()} - {node_name}] Starting Gate Worker for {camera_id}")
     
-    while True:
-        # placeholder for robolow line crossing
+    log.info("Gate Worker INITIALIZED. Starting main loop...")
+    
+    while not stop_event.is_set():
         time.sleep(5)
+
+    log.info("Gate Worker received stop signal. Cleaning up resources...")
+    log.info("Gate Worker SHUTDOWN COMPLETE.")

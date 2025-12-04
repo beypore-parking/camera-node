@@ -208,3 +208,5 @@ __marimo__/
 
 serviceAccountKey.json
 config/serviceAccountKey.json
+*.avi
+*.pt

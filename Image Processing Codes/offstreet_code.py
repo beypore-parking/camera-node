@@ -126,11 +126,11 @@ occupied_bike_slots = []   # NEW: Track currently occupied bike slots
 
 
 # Load class list for YOLO
-with open(r"C:\Users\DELL\Desktop\smartparking\coco.txt" ) as my_file:
+with open(r"./coco.txt" ) as my_file:
     class_list = my_file.read().split("\n")
 
 # Initialize Firebase app
-cred_obj = firebase_admin.credentials.Certificate(r'path to firebase admin json file')
+cred_obj = firebase_admin.credentials.Certificate(r'./serviceAccountKey.json')
 default_app = firebase_admin.initialize_app(cred_obj, {
     'databaseURL': 'credentials to database url'
     
@@ -155,8 +155,8 @@ def update_parked_slot(key,slot):
 
 
 def initialize_video_capture():
-    cap = cv2.VideoCapture(r'rtsp://admin:parking_12@192.168.0.64')
-    #cap = cv2.VideoCapture("output_video_pranav2.avi")
+    # cap = cv2.VideoCapture(r'rtsp://admin:parking_12@192.168.0.64')
+    cap = cv2.VideoCapture("output_video.avi")
     return cap
 
 def reconnect_video_capture(max_retries=5, retry_interval=5):

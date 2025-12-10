@@ -1,0 +1,23 @@
+# Video files
+*.ts
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Model files
+*.pt
+*.pth
+*.onnx
+*.weights
+*.h5
+
+# Virtual environment
+venv/
+env/
+*.pyc
+__pycache__/
+
+# IDE
+.vscode/
+.idea/

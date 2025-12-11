@@ -13,148 +13,156 @@ This schema is designed for a **Realtime Database (Firebase)**. It follows a str
 ```jsonc
 {
   "locations": {
-    // NODE IDENTIFIER: Unique ID for the physical Edge Device
+    // PHYSICAL EDGE NODE IDENTIFIER
     "Node_01_Main_Campus": {
       // ==========================================
       // SECTION 1: SYSTEM HEALTH (Heartbeat)
-      // Used by Admin Panel to detect offline nodes
       // ==========================================
       "system_health": {
-        "status": "online", // "online" | "offline"
-        "last_seen": "2025-12-04T18:30:00.000Z",
-        "ip_address": "192.168.1.50" // Local IP for debugging
+        "status": "online",
+        "last_seen": "2025-12-11T10:00:00Z",
+        "ip_address": "192.168.1.50"
       },
 
       // ==========================================
       // SECTION 2: CONFIGURATION
-      // The "Source of Truth". Admin draws polygons here.
-      // Edge Node listens to changes here to hot-reload.
+      // The "Static" definition of the world.
       // ==========================================
       "config": {
-        "cameras": {
-          // --- TYPE A: OFF-STREET (Marked Bays) ---
-          "cam_01_parking_lot_A": {
+        "parking_lots": {
+          // --- LOGICAL UNIT 1: GATED PARKING LOT ---
+          "lot_A_faculty": {
             "enabled": true,
-            "type": "offstreet",
-            "rtsp_url": "rtsp://admin:pass@192.168.1.101/stream1",
-            "polygons": {
-              // Keys are the SLOT IDs (displayed in App)
-              "C1": {
-                "type": "car",
-                "points": [
-                  [399, 519],
-                  [407, 549],
-                  [468, 643],
-                  [399, 519]
-                ]
-              },
-              "C2": {
-                "type": "car",
-                "points": [
-                  [693, 505],
-                  [748, 618],
-                  [690, 488],
-                  [693, 505]
-                ]
-              },
-              "B1": {
-                "type": "bike",
-                "points": [
-                  [100, 100],
-                  [150, 100],
-                  [150, 150],
-                  [100, 150]
-                ]
-              }
-            }
-          },
+            "display_name": "Faculty Parking Lot A",
+            "type": "offstreet", // "offstreet" | "onstreet | gate"
+            "lat": 11.321,
+            "long": 75.933,
 
-          // --- TYPE B: ON-STREET (Linear/Ruler) ---
-          "cam_02_curbside": {
-            "enabled": true,
-            "type": "onstreet",
-            "rtsp_url": "rtsp://admin:pass@192.168.1.102/stream1",
-            // The "Ruler": A chain of small segments along the curb
-            "roi_polygons": {
-              "segment_01": {
-                "points": [
-                  [10, 10],
-                  [20, 10],
-                  [20, 20],
-                  [10, 20]
-                ]
-              },
-              "segment_02": {
-                "points": [
-                  [20, 10],
-                  [30, 10],
-                  [30, 20],
-                  [20, 20]
-                ]
-              },
-              "segment_03": {
-                "points": [
-                  [30, 10],
-                  [40, 10],
-                  [40, 20],
-                  [30, 20]
-                ]
-              },
-              "segment_04": {
-                "points": [
-                  [40, 10],
-                  [50, 10],
-                  [50, 20],
-                  [40, 20]
-                ]
-              },
-              "segment_05": {
-                "points": [
-                  [50, 10],
-                  [60, 10],
-                  [60, 20],
-                  [50, 20]
-                ]
-              }
+            // Total Capacity of this entire closed area - > defined from the admin panel when drawing bounding boxes
+            "capacities": {
+              "car": 50,
+              "bike": 20,
+              "big_car": 5
             },
-            // Calibration: How many segments = 1 vehicle?
-            "calibration": {
-              "segments_per_car": 5,
-              "segments_per_bike": 2
-            }
-          },
 
-          // --- TYPE C: GATE (Combined Stream) ---
-          "cam_03_main_gate": {
-            "enabled": true,
-            "type": "gate",
-            "gate_mode": "combined", // One camera sees both In and Out
-            "streams": {
-              "primary": {
+            // The sensors (cameras) assigned to this lot
+            "cameras": {
+              "cam_01": {
+                "enabled": true,
+                "role": "occupancy_tracker", // Uses Polygons
+                "rtsp_url": "rtsp://admin:pass@192.168.1.101/stream1",
+                "polygons": {
+                  "C1": {
+                    "type": "car",
+                    "points": [
+                      [0, 0],
+                      [10, 10],
+                      [10, 0]
+                    ]
+                  },
+                  "C2": {
+                    "type": "car",
+                    "points": [
+                      [20, 20],
+                      [30, 30],
+                      [30, 20]
+                    ]
+                  }
+                }
+              },
+
+              // CAMERA 2: The Entry Gate (Counts Inflows)
+              "cam_02_front_gate": {
+                "enabled": true,
+                "role": "gate_counter", // Uses Lines
+                "rtsp_url": "rtsp://admin:pass@192.168.1.102/stream1",
+                "gate_logic": {
+                  "mode": "entry_only", // "entry_only" | "exit_only" | "combined"
+                  "line_coords": [100, 500, 800, 500]
+                  // Crossing this line increments 'total_in' for Lot A
+                }
+              },
+
+              // CAMERA 3: The Exit Gate (Counts Outflows)
+              "cam_03_back_gate": {
+                "enabled": true,
+                "role": "gate_counter",
                 "rtsp_url": "rtsp://admin:pass@192.168.1.103/stream1",
-                // Roboflow LineZone: [Start_X, Start_Y, End_X, End_Y]
-                "line_coords": [100, 500, 800, 500],
-                // Logic: Does crossing Top-to-Bottom mean 'Entering' or 'Exiting'?
-                "entry_direction": "top_to_bottom"
+                "gate_logic": {
+                  "mode": "exit_only",
+                  "line_coords": [50, 200, 400, 200]
+                  // Crossing this line increments 'total_out' for Lot A
+                }
               }
             }
           },
 
-          // --- TYPE D: GATE (Separate Streams) ---
-          "cam_04_back_gate": {
+          // --- LOGICAL UNIT 2: CURBSIDE (Open Street) ---
+          "lot_B_market_road": {
             "enabled": true,
-            "type": "gate",
-            "gate_mode": "separate", // Two physical cameras
-            "streams": {
-              "entry_cam": {
+            "display_name": "Market Road Curbside",
+            "type": "onstreet",
+            "lat": 11.325,
+            "long": 75.938,
+
+            "capacities": {
+              "total_length_units": 100 // Abstract units for linear parking
+            },
+
+            "cameras": {
+              "cam_04_street_view": {
+                "enabled": true,
+                "role": "linear_tracker",
                 "rtsp_url": "rtsp://admin:pass@192.168.1.104/stream1",
-                "line_coords": [50, 200, 400, 200]
-                // Note: Any crossing here is an ENTRY
+                "roi_polygon": [
+                  [0, 0],
+                  [1920, 0],
+                  [1920, 500],
+                  [0, 500]
+                ],
+                "calibration": { "pixels_per_unit": 50 }
+              }
+            }
+          },
+
+          // Gate style
+          "lot_C_faculty": {
+            "enabled": true,
+            "display_name": "Faculty Parking Lot C",
+            "type": "gate",
+            "lat": 11.321,
+            "long": 75.933,
+
+            // Total Capacity of this gated area
+            "capacities": {
+              "combined": false, // if its not combined, if car leaves -> increase bike slots by 2 && two bikes will count as one car
+              "car": 50,
+              "bike": 20,
+              "total": null
+            },
+
+            // The sensors (cameras) assigned to this lot
+            "cameras": {
+              // CAMERA 1
+              "cam_02_front_gate": {
+                "enabled": true,
+                "role": "gate_counter", // Uses Lines
+                "rtsp_url": "rtsp://admin:pass@192.168.1.102/stream1",
+                "gate_logic": {
+                  "line_coords": [100, 500, 800, 500],
+                  "direction": "top_to_bottom"
+                }
               },
-              "exit_cam": {
-                "rtsp_url": "rtsp://admin:pass@192.168.1.105/stream1",
-                "line_coords": [50, 200, 400, 200]
-                // Note: Any crossing here is an EXIT
+
+              // CAMERA 2
+              "cam_02_back_gate": {
+                "enabled": true,
+                "role": "gate_counter",
+                "rtsp_url": "rtsp://admin:pass@192.168.1.103/stream1",
+                "gate_logic": {
+                  "line_coords": [50, 200, 400, 200],
+                  "direction": "top_to_bottom"
+                }
               }
             }
           }
@@ -163,73 +171,73 @@ This schema is designed for a **Realtime Database (Firebase)**. It follows a str
 
       // ==========================================
       // SECTION 3: LIVE STATUS
-      // High-frequency updates from Edge.
-      // Mobile App and Admin Panel listens here.
+      // The "Dynamic" State. Aggregated by Edge Node.
       // ==========================================
       "live_status": {
-        // OFF-STREET STATUS
-        "cam_01_parking_lot_A": {
-          "last_updated": "2025-12-04T18:30:05.123Z",
-          "snapshot": {
-            "url": "https://firebasestorage.googleapis.com/v0/b/your-app.appspot.com/o/snapshots%2Fcam_01.jpg?alt=media&token=...",
-            "timestamp": "2025-12-04T18:35:00.000Z" // Helps Admin Panel know if image is stale
+        // STATUS FOR LOT A
+        "lot_A_faculty": {
+          "last_updated": "2025-12-11T10:05:00Z",
+
+          // 1. Calculated Global Counts (Logic: Total - (In - Out))
+          "occupancy": {
+            "current_cars": 25, // The vital number for the User App
+            "current_bikes": 5,
+            "analytics": {
+              "total_in_today": 150,
+              "total_out_today": 125
+            }
           },
+
+          // 2. Granular Slot Map (Green/Red boxes)
           "slots": {
             "C1": "occupied",
             "C2": "free",
-            "B1": "free"
+            "C3": "occupied"
           },
-          // Aggregated counts for quick UI display
-          "summary": {
-            "total_free_cars": 1,
-            "total_free_bikes": 1
+
+          // 3. Visual Proof (Snapshots from child cameras)
+          "snapshots": {
+            "cam_01": {
+              "url": "https://storage.../cam_01.jpg",
+              "timestamp": "..."
+            }
           }
         },
 
-        // ON-STREET STATUS
-        "cam_02_curbside": {
-          "last_updated": "2025-12-04T18:30:05.456Z",
-          "snapshot": {
-            "url": "https://firebasestorage.googleapis.com/.../cam_03.jpg?...",
-            "timestamp": "2025-12-04T18:35:05.000Z"
+        // STATUS FOR LOT B
+        "lot_B_market_road": {
+          "last_updated": "2025-12-11T10:05:05Z",
+          "occupancy": {
+            "estimated_free": 4, // Calculated via linear logic
+            "occupancy_level": "medium" // low | medium | high
           },
-          "metrics": {
-            "total_length_units": 15, // Total segments drawn
-            "occupied_units": 5, // How many segments are covered
-            "estimated_free_cars": 2 // (15 - 5) / 5 = 2
+          "snapshots": {
+            "cam_04_street_view": {
+              "url": "...",
+              "timestamp": "..."
+            }
           }
         },
 
-        // GATE STATUS (Counts)
-        "cam_03_main_gate": {
-          "last_updated": "2025-12-04T18:30:10.000Z",
-          "snapshot": {
-            "url": "https://firebasestorage.googleapis.com/.../cam_03.jpg?...",
-            "timestamp": "2025-12-04T18:35:05.000Z"
-          },
-          "counts": {
-            "current_inside": 45, // Logic: (initial + in - out). Never < 0.
-            "total_in": 120, // Total entries today
-            "total_out": 75 // Total exits today
-          }
-        },
-
-        "cam_04_back_gate": {
-          "last_updated": "2025-12-04T18:30:12.000Z",
-          "snapshot": {
-            "entry_cam": {
-              "url": "https://firebasestorage.googleapis.com/.../cam_03.jpg?...",
-              "timestamp": "2025-12-04T18:35:05.000Z"
-            },
-            "exit_cam": {
-              "url": "https://firebasestorage.googleapis.com/.../cam_03.jpg?...",
-              "timestamp": "2025-12-04T18:35:05.000Z"
+        // STATUS FOR LOT B
+        "lot_C_faculty": {
+          "last_updated": "2025-12-11T10:05:05Z",
+          "occupancy": {
+            "current_in": 25, // The vital number for the User App
+            "analytics": {
+              "total_in_today": 150,
+              "total_out_today": 125
             }
           },
-          "counts": {
-            "current_inside": 12,
-            "total_in": 50,
-            "total_out": 38
+          "snapshots": {
+            "cam_02_front_gate": {
+              "url": "...",
+              "timestamp": "..."
+            },
+            "cam_02_back_gate": {
+              "url": "...",
+              "timestamp": "..."
+            }
           }
         }
       }
@@ -259,9 +267,8 @@ We wrap everything in `locations/{Node_Name}`.
 This data is **static** (it doesn't change every second).
 
 1.  **Polygons as a Dictionary:** We use `"C1": {...}` instead of a list `[...]`. This allows the Edge node to instantly know which ID to update in the database without searching through a list.
-2.  **Gate Mode (Combined vs. Separate):**
-    - **Combined:** One RTSP stream. The logic relies on `entry_direction` (e.g., did the car cross the line Top-to-Bottom or Bottom-to-Top?).
-    - **Separate:** Two RTSP streams. The logic is simpler: Camera A _only_ counts entries. Camera B _only_ counts exits.
+2.  **Gate Mode:**
+    - **One + RTSP stream:** One or more RTSP streams. The logic relies on `entry_direction` (e.g., did the car cross the line Top-to-Bottom or Bottom-to-Top?). The total count is maintained in the node process.
 
 ### D. Live Status (`live_status`)
 

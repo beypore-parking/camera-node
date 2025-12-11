@@ -1,7 +1,7 @@
 import cv2
 
 # This script is just a helper to find the cordinates of the frame of the line and use them in the supervision_test script 
-VIDEO_PATH = "lh_gate.ts" 
+VIDEO_PATH = "./vid2.mp4" 
 
 # Global variables
 start_point = None

@@ -94,15 +94,22 @@ def sync_config_state(node_config):
 # --- persistant counts ---
 def get_current_counts(node_config, lot_id):
     # fetches current occupancy numbers from firebase. 
-    # needed for Gate Workers to not reset to 0 on restart.
-        
+    # needed for gate workers to not reset to 0 on restart.
     node_name = node_config.get('node_name')
     try:
-        ref = db.reference(f"locations/{node_name}/live_status/{lot_id}/occupancy")
+        ref = db.reference(f"locations/{node_name}/live_status/{lot_id}/occupancy") 
         data = ref.get()
-        return data if data else {}
-    except:
-        return {}
+        # ensure it returns a dict with expected keys, even if firebase is empty/null
+        if data is None: 
+             return {'in_count': 0, 'out_count': 0}
+        
+        # firebase may return null, so check for that
+        return data if isinstance(data, dict) else {'in_count': 0, 'out_count': 0}
+        
+    except Exception as e:
+        logger.error(f"Error fetching persistent counts for {lot_id}: {e}")
+        # return a safe default on failure
+        return {'in_count': 0, 'out_count': 0}
 
 # --- firebase data sync loop ---
 def firebase_sync_loop(node_config, data_queue, stop_event):

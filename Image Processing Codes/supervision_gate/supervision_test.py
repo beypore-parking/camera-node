@@ -3,7 +3,7 @@ from ultralytics import YOLO
 import supervision as sv
 
 # Replace this later on with the stsp stream
-VIDEO_PATH = "lh_gate.ts" 
+VIDEO_PATH = "vid2.mp4" 
 MODEL_NAME = "yolov8n.pt"
 
 # Initial Capacity 
@@ -15,8 +15,8 @@ TOTAL_SPOTS = 200
 
 # Take these coordinates from the find_coordinates helper script for the particular stream
 # These will be fetched from the Realtime database after being set by the admin panel
-START_POINT = sv.Point(x=0, y=841) 
-END_POINT = sv.Point(x=1916, y=282)
+START_POINT = sv.Point(x=57, y=677) 
+END_POINT = sv.Point(x=1895, y=671)
 
 def main():
 
@@ -78,6 +78,8 @@ def main():
             (0, 255, 0), 
             3
         )
+        
+        cv2.imshow("Parking System", annotated_frame) 
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break

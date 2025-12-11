@@ -1,6 +1,37 @@
 {
-  "node_name": "dev-1",
+  "node_name": "dev-1-test",
   "firebase_db_url": "https://parking-app-cd0f0-default-rtdb.firebaseio.com/",
-  "firebase_storage_bucket": "https://www.google.com/url?sa=E&source=gmail&q=parking-app-cd0f0.appspot.com",
-  "parking_lots": {}
+  "firebase_storage_bucket": "parking-app-cd0f0.appspot.com",
+  "parking_lots": {
+    "CCD_Parking": {
+      "enabled": true,
+      "display_name": "CCD Parking",
+      "type": "gate",
+      "lat": 11.321,
+      "long": 75.933,
+      "capacities": {
+        "total": 200
+      },
+      "cameras": {
+        "cam_01_front_gate": {
+          "enabled": true,
+          "role": "gate_counter",
+          "rtsp_url": "vid1.mp4",
+          "gate_logic": {
+            "line_coords": [74, 959, 1872, 81],
+            "direction": "top_to_bottom"
+          }
+        },
+        "cam_02_back_gate": {
+          "enabled": true,
+          "role": "gate_counter",
+          "rtsp_url": "vid2.mp4",
+          "gate_logic": {
+            "line_coords": [57, 677, 1895, 671],
+            "direction": "top_to_bottom"
+          }
+        }
+      }
+    }
+  }
 }

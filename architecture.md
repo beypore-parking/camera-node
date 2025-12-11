@@ -73,9 +73,7 @@ Modularized processes based on the "Type" defined in the schema:
 
 - **Type 1 (Off-Street):** Uses **Point-in-Polygon**. Detects if a vehicle center is inside specific marked bays (e.g., "Slot C1").
 - **Type 2 (On-Street):** Uses **Linear Estimation**. Draws a "Ruler" of small segments along a curb. Calculates availability based on how many segments are covered (e.g., "15 segments / 5 per car = 3 spots").
-- **Type 3 (Gate):** Uses **Line Crossing** (Roboflow Supervision).
-  - _Combined Mode:_ One camera handles both Entry and Exit based on direction.
-  - _Separate Mode:_ Two physical cameras, one dedicated to Entry, one to Exit.
+- **Type 3 (Gate):** Uses **Line Crossing** (Roboflow Supervision). Multiple gates can be used to count the number of vehicles in the parking lot by keeping track of the total in vehicles.
 
 ### B. The Cloud Layer (The "Brain")
 

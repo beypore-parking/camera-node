@@ -6,25 +6,25 @@ import threading
 import multiprocessing
 import signal
 from datetime import datetime
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 import firebase_admin
 from firebase_admin import credentials, db, storage
 
-# worker functions stub for now (assume these accept `stop_event` as the last argument)
+# config manager
+from helpers.config_manager import load_and_validate_config
+
+# worker functions
 from workers.offstreet import run_offstreet_worker
 from workers.onstreet import run_onstreet_worker
 from workers.gate import run_gate_worker
 
-# --- configs & logging ---
 CONFIG_PATH = "config/config.json"
-CREDS_PATH = "config/serviceAccountKey.json"
 
-# custom logger configuration
+# --- logging ---
 class NodeFormatter(logging.Formatter):
     def format(self, record):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        # Use getattr with a default in case the extra dict hasn't been added yet
         location = getattr(record, 'location_name', "ORCHESTRATOR")
         return f"[{timestamp} - {location}] {record.getMessage()}"
 
@@ -34,310 +34,358 @@ handler.setFormatter(NodeFormatter())
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# global State
+# --- global state ---
 processes = {}
 data_queue = multiprocessing.Queue()
-node_config = {}
-sync_thread = None # should evenutally hold the threading.Thread instance
-stop_event = multiprocessing.Event() # flag to signal processes/threads to stop
+node_config = {} 
+sync_thread = None 
+stop_event = multiprocessing.Event() 
 
-# --- cleanup and signal handling ---
-def perform_cleanup():
-    """Terminates worker processes and signals the sync thread to stop."""
-    global sync_thread
-    
-    # 1. set the global stop flag for all workers and threads
-    if not stop_event.is_set():
-        stop_event.set()
-        logger.info("Stop event signaled. Waiting for processes/threads to clean up...")
-
-    # 2. terminate and join multiprocessing workers
-    for pid, p in processes.items():
-        if p.is_alive():
-            logger.info(f"Terminating worker process {pid} (Type: {p.name})...")
-            p.terminate()
-            p.join(timeout=5) # timeout for termination
-            if p.is_alive():
-                logger.error(f"Worker process {pid} failed to terminate gracefully.")
-
-    # 3. join the Sync Thread
-    if sync_thread and sync_thread.is_alive():
-        logger.info("Joining Firebase sync thread...")
-        sync_thread.join(timeout=5)
-        if sync_thread.is_alive():
-            logger.error("Firebase sync thread failed to join.")
-
-    # 4. clear the queue
-    while not data_queue.empty():
-        try:
-            data_queue.get_nowait()
-        except:
-            break
-            
-    logger.info("Graceful shutdown complete.")
-
-def handle_sigterm(signum, frame):
-    """Handles SIGINT/SIGTERM for graceful external shutdown."""
-    # ensure this runs only once
-    if stop_event.is_set():
-        return
-        
-    logger.info(f"Received signal {signum} ({signal.Signals(signum).name}). Initiating external graceful shutdown...")
-    perform_cleanup()
-    
-    # exit the main process after cleanup
-    os._exit(0)
-
-# register signal handlers immediately for external shutdowns (Ctrl+C, Docker Stop)
-signal.signal(signal.SIGINT, handle_sigterm)
-signal.signal(signal.SIGTERM, handle_sigterm)
-
-# --- firebase setp ---
+# --- firebase setup ---
 def init_firebase():
-    if not firebase_admin._apps:
-        try:
-            cred = credentials.Certificate(CREDS_PATH)
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': node_config.get('firebase_db_url'),
-                'storageBucket': node_config.get('firebase_storage_bucket') 
-            })
-            logger.info("Firebase Connected Successfully.")
-        except Exception as e:
-            logger.error(f"Failed to connect to Firebase: {e}")
-
-# func to start single camera
-def start_single_camera(cam_config):
-    """Helper to start/restart a specific camera process."""
-    p_id = cam_config['id']
-    p_type = cam_config['type']
+    # we assume node_config is loaded by now
+    creds_path = node_config.get('service_account_path', 'config/serviceAccountKey.json')
     
+    if not os.path.exists(creds_path):
+        logger.critical(f"Service Account Key missing at: {creds_path}")
+        os._exit(1)
+
+    try:
+        cred = credentials.Certificate(creds_path)
+        firebase_admin.initialize_app(cred, {
+            'databaseURL': node_config['firebase_db_url'],
+            'storageBucket': node_config['firebase_storage_bucket']
+        })
+        logger.info("Firebase Connected.")
+    except Exception as e:
+        logger.critical(f"FIREBASE CONNECTION FAILED: {e}")
+        os._exit(1)
+
+# --- hybird sync logic ---
+def sync_config_state():
+    # 1. pushes local truth (lat/long/identity) to firebase.
+    # 2. pulls cloud truth (polygons/rules) to local memory.
+
+    node_name = node_config.get('node_name')
+    if not node_name: return
+
+    logger.info("Starting Configuration Sync (Hybrid Mode)...")
+    
+    # reference to the cloud config
+    cloud_config_ref = db.reference(f"locations/{node_name}/config/parking_lots")
+    cloud_data = cloud_config_ref.get()
+
+    # IF FIRST RUN: upload local config as baseline
+    if not cloud_data:
+        logger.info("Cloud config empty. Initializing with Local Defaults.")
+        cloud_config_ref.set(node_config.get('parking_lots', {}))
+        return 
+
+    # IF SUBSEQUENT RUN: merge
+    local_lots = node_config.get('parking_lots', {})
+    
+    for lot_id, local_data in local_lots.items():
+        base_path = f"locations/{node_name}/config/parking_lots/{lot_id}"
+        
+        # A. ENFORCE LOCAL TRUTH -> push to firebase
+        # physical location and hardware identity never change from the cloud side so we just keep it
+        db.reference(base_path).update({
+            "lat": local_data.get('lat'),
+            "long": local_data.get('long'),
+            "display_name": local_data.get('display_name'),
+            "type": local_data.get('type')
+        })
+
+        # B. ENFORCE CLOUD TRUTH -> pull to memory
+        cloud_lot = cloud_data.get(lot_id)
+        if cloud_lot:
+            # overwrite capacities
+            if 'capacities' in cloud_lot:
+                node_config['parking_lots'][lot_id]['capacities'] = cloud_lot['capacities']
+            
+            # overwrite enabled status
+            if 'enabled' in cloud_lot:
+                node_config['parking_lots'][lot_id]['enabled'] = cloud_lot['enabled']
+
+            # overwrite Camera logic (polygons/lines)
+            cloud_cameras = cloud_lot.get('cameras', {})
+            local_cameras = local_data.get('cameras', {})
+            
+            for cam_id, local_cam in local_cameras.items():
+                if cam_id in cloud_cameras:
+                    cloud_cam = cloud_cameras[cam_id]
+                    
+                    # merge logic fields
+                    if 'polygons' in cloud_cam:
+                         node_config['parking_lots'][lot_id]['cameras'][cam_id]['polygons'] = cloud_cam['polygons']
+                    if 'gate_logic' in cloud_cam:
+                        node_config['parking_lots'][lot_id]['cameras'][cam_id]['gate_logic'] = cloud_cam['gate_logic']
+                    if 'roi_polygon' in cloud_cam:
+                        node_config['parking_lots'][lot_id]['cameras'][cam_id]['roi_polygon'] = cloud_cam['roi_polygon']
+                    if 'enabled' in cloud_cam:
+                         node_config['parking_lots'][lot_id]['cameras'][cam_id]['enabled'] = cloud_cam['enabled']
+
+    logger.info("Sync Complete. Local memory aligned with Cloud Logic.")
+
+# --- persistant counts ---
+def get_current_counts(lot_id):
+    # fetches current occupancy numbers from firebase. 
+    # needed for Gate Workers to not reset to 0 on restart.
+        
+    node_name = node_config.get('node_name')
+    try:
+        ref = db.reference(f"locations/{node_name}/live_status/{lot_id}/occupancy")
+        data = ref.get()
+        return data if data else {}
+    except:
+        return {}
+
+# --- process manager ---
+def start_single_camera(cam_config):
+    cam_id = cam_config['id']
+    lot_type = cam_config.get('lot_type', 'offstreet') 
+    lot_id = cam_config.get('lot_id')
+    
+    # 1. INJECT SNAPSHOT TRIGGER
+    # the worker logic must check this flag and send a snapshot immediately on startup
+    cam_config['force_startup_snapshot'] = True
+
+    # 2. INJECT PERSISTENT STATE (For Gates)
+    if lot_type == 'gate':
+        current_counts = get_current_counts(lot_id)
+        cam_config['initial_state'] = current_counts
+        logger.info(f"Injecting initial state for {cam_id}: {current_counts}")
+
     target_func = None
-    if p_type == "offstreet": target_func = run_offstreet_worker
-    elif p_type == "onstreet": target_func = run_onstreet_worker
-    elif p_type == "gate": target_func = run_gate_worker
+    worker_label = ""
+
+    if lot_type == "offstreet": 
+        target_func = run_offstreet_worker
+        worker_label = "OFFSTREET"
+    elif lot_type == "onstreet": 
+        target_func = run_onstreet_worker
+        worker_label = "ONSTREET"
+    elif lot_type == "gate": 
+        target_func = run_gate_worker
+        worker_label = "GATE"
     
     if target_func:
         p = multiprocessing.Process(
             target=target_func,
             args=(cam_config, data_queue, node_config['node_name'], stop_event),
-            name=f"Worker-{p_id}-{p_type.upper()}"
+            name=f"Worker-{cam_id}-{worker_label}"
         )
         p.start()
-        processes[p_id] = p
-        logger.info(f"Worker {p_id} RESTARTED.")
+        processes[cam_id] = p
+        logger.info(f"Worker {cam_id} ({worker_label}) STARTED.")
 
-# --- process manager ---
 def start_camera_processes():
-    """Spawns a new process for each enabled camera in config."""
-    cameras = node_config.get('cameras', [])
+    # uses the node_config which is now populated with firebase data
+    lots = node_config.get('parking_lots', {})
     
-    if not cameras:
-        logger.warning("No cameras found in configuration. Waiting for updates...")
-        return
-
-    for cam in cameras:
-        if not cam.get('enabled', True):
+    for lot_id, lot_data in lots.items():
+        if not lot_data.get('enabled', True):
             continue
 
-        p_id = cam['id']
-        p_type = cam['type']
-        
-        # select the correct worker function
-        target_func = None
-        worker_name = ""
-        if p_type == "offstreet":
-            target_func = run_offstreet_worker
-            worker_name = "OFFSTREET"
-        elif p_type == "onstreet":
-            target_func = run_onstreet_worker
-            worker_name = "ONSTREET"
-        elif p_type == "gate":
-            target_func = run_gate_worker
-            worker_name = "GATE"
-        
-        if target_func:
-            # create process
-            p = multiprocessing.Process(
-                target=target_func,
-                args=(cam, data_queue, node_config['node_name'], stop_event),
-                name=f"Worker-{p_id}-{worker_name}"
-            )
-            p.start()
-            processes[p_id] = p
-            
-            # log process start
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            logger.info(f"Worker {p_id} ({worker_name}) STARTED.")
+        lot_type = lot_data.get('type')
+        lot_caps = lot_data.get('capacities', {})
+        cameras = lot_data.get('cameras', {})
 
-# --- data sync loop ---
+        for cam_id, cam_data in cameras.items():
+            if not cam_data.get('enabled', True):
+                continue
+            
+            # re-inject context
+            cam_data['id'] = cam_id
+            cam_data['lot_id'] = lot_id
+            cam_data['lot_type'] = lot_type
+            cam_data['lot_capacities'] = lot_caps
+
+            start_single_camera(cam_data)
+
+# --- firebase data sync loop ---
 def firebase_sync_loop():
-    """Reads queue, uploads snapshots to Storage, and status to DB."""
     node_name = node_config.get('node_name')
-    
-    # check the stop_event regularly to exit gracefully
     while not stop_event.is_set():
         try:
             if not data_queue.empty():
-                # get data from workers
                 payload = data_queue.get()
                 cam_id = payload.get('id')
-                p_type = payload.get('type', 'status') # Default to status
+                lot_id = payload.get('lot_id')
+                p_type = payload.get('type', 'status')
                 data = payload.get('data')
 
-                # push to Firebase
                 if not node_name: continue
+                base_ref = f"locations/{node_name}"
 
-                # --- CASE A: SNAPSHOT (Image Upload) ---
+                # snapshot Handler
                 if p_type == 'snapshot':
                     image_bytes = data.get('image_bytes')
-                    timestamp = data.get('timestamp')
-                    
-                    # 1. Upload to Storage
+                    ts = data.get('timestamp')
                     bucket = storage.bucket()
-                    blob_path = f"snapshots/{node_name}/{cam_id}.jpg"
-                    blob = bucket.blob(blob_path)
+                    # path: snapshots/Node/Lot/Cam.jpg
+                    blob = bucket.blob(f"snapshots/{node_name}/{lot_id}/{cam_id}.jpg")
                     blob.upload_from_string(image_bytes, content_type='image/jpeg')
                     blob.make_public() 
                     
-                    # 2. Update DB with URL
-                    ref = db.reference(f"locations/{node_name}/live_status/{cam_id}/snapshot")
-                    ref.update({
-                        "url": blob.public_url,
-                        "timestamp": timestamp
+                    # update the live status with the new image URL
+                    db.reference(f"{base_ref}/live_status/{lot_id}/snapshots/{cam_id}").update({ 
+                        "url": blob.public_url, 
+                        "timestamp": ts 
                     })
                     logger.info(f"Snapshot uploaded for {cam_id}")
 
-                # --- CASE B: GATE EVENT (History Log) ---
                 elif p_type == 'gate_event':
-                    # Push to history log (generates unique ID)
-                    ref = db.reference(f"locations/{node_name}/gate_events/{cam_id}")
-                    ref.push(data)
+                    db.reference(f"{base_ref}/gate_events/{lot_id}").push(data)
 
-                # --- CASE C: LIVE STATUS (Occupancy/Counts) ---
-                else:
-                    # Update live status (Overwrites previous state)
-                    ref = db.reference(f"locations/{node_name}/live_status/{cam_id}")
-                    ref.update(data)
+                elif p_type == 'slot_update':
+                     db.reference(f"{base_ref}/live_status/{lot_id}/slots").update(data)
+                     db.reference(f"{base_ref}/live_status/{lot_id}").update({"last_updated": datetime.now().isoformat()})
+
+                elif p_type == 'occupancy_update':
+                    db.reference(f"{base_ref}/live_status/{lot_id}/occupancy").update(data)
+                    db.reference(f"{base_ref}/live_status/{lot_id}").update({"last_updated": datetime.now().isoformat()})
 
             time.sleep(0.05)
         except Exception as e:
             logger.error(f"Sync Error: {e}")
             time.sleep(1)
 
-# --- heartbeat loop ---
+# --- hearbeat ---
 def heartbeat_loop():
-    """Updates system_health in Firebase every 60 seconds."""
     node_name = node_config.get('node_name')
-    if not node_name: 
-        return
-
-    logger.info("Heartbeat thread started.")
+    if not node_name: return
     while not stop_event.is_set():
         try:
             if firebase_admin._apps:
-                ref = db.reference(f"locations/{node_name}/system_health")
-                ref.update({
+                db.reference(f"locations/{node_name}/system_health").update({
                     "status": "online",
                     "last_seen": datetime.now().isoformat(),
                 })
-        except Exception as e:
-            logger.error(f"Heartbeat failed: {e}")
-        
+        except Exception: pass 
         time.sleep(60)
+
+# --- cleaup ---
+def perform_cleanup():
+    global sync_thread
+    if not stop_event.is_set():
+        stop_event.set()
+        logger.info("Stopping...")
+    for pid, p in processes.items():
+        if p.is_alive():
+            p.terminate()
+            p.join(timeout=3)
+    if sync_thread and sync_thread.is_alive():
+        sync_thread.join(timeout=3)
+
+def handle_sigterm(signum, frame):
+    if stop_event.is_set(): return 
+    perform_cleanup()
+    os._exit(0)
+
+signal.signal(signal.SIGINT, handle_sigterm)
+signal.signal(signal.SIGTERM, handle_sigterm)
 
 # --- fastapi lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # FIX: Moved global declarations to the top to resolve SyntaxError
-    global node_config
-    global logger
-    global sync_thread
+    global node_config, logger, sync_thread
     
-    # 1. load config
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, 'r') as f:
-                node_config = json.load(f)
-        except json.JSONDecodeError as e:
-             logger.error(f"Error loading config file: {e}")
-             # Optionally exit if config is critical
-             os._exit(1)
-
-
-    # 2. interactive setup (if name is missing)
-    if not node_config.get("node_name"):
-        print("\n" + "="*40)
-        print(" NEW NODE DETECTED ")
-        print("="*40)
-        name = input("Please enter a name for this location (e.g., 'MainGate_Server'): ").strip()
-        node_config["node_name"] = name
-        
-        # Save back to file
-        with open(CONFIG_PATH, 'w') as f:
-            json.dump(node_config, f, indent=4)
+    # 1. load local config and validate
+    config = load_and_validate_config(CONFIG_PATH)
+    if config is None: os._exit(1)
+    node_config = config
     
-    # set logger context
-    # Re-initialize logger adapter after node_name is set
     logger_extra = {'location_name': node_config['node_name']}
     logger = logging.LoggerAdapter(logging.getLogger("Orchestrator"), logger_extra)
 
-    # 3. initialize systems
+    # 2. connect to firebase
     init_firebase()
+    
+    # 3. HYBRID SYNC: push Lat/Long -> pull polygons/state
+    sync_config_state()
+    
+    # 4. start workers
     start_camera_processes()
     
-    # 4. start sync thread and heartbeat thread (background)
     sync_thread = threading.Thread(target=firebase_sync_loop, daemon=True)
     sync_thread.start()
-    logger.info("Firebase sync thread started.")
-
     hb_thread = threading.Thread(target=heartbeat_loop, daemon=True)
     hb_thread.start()
-    logger.info("Heartbeat sync thread started.")
 
-    yield # server is running...
-    
-    # 5. cleanup on shutdown (uvicorn graceful shutdown path)
-    logger.info("FastAPI lifecycle ending. Initiating graceful shutdown via lifespan...")
+    yield 
     perform_cleanup()
     
 app = FastAPI(lifespan=lifespan)
 
-# --- api routes ---
 @app.get("/")
 def home():
-    # Use logger here for the adapter to work consistently, but access the base logger if adapter fails
-    current_logger = logger if isinstance(logger, logging.LoggerAdapter) else logging.getLogger("Orchestrator")
-    current_logger.info("Root path accessed.")
-    
-    return {"status": "Online", "node": node_config.get("node_name"), "sync_thread_alive": sync_thread.is_alive() if sync_thread else False}
+    return {"status": "Online", "node": node_config.get("node_name")}
 
 @app.get("/health")
 def health_check():
-    status = {pid: p.is_alive() for pid, p in processes.items()}
-    return {"node": node_config.get("node_name"), "processes": status, "sync_thread_alive": sync_thread.is_alive() if sync_thread else False}
+    return {"processes": {k: v.is_alive() for k, v in processes.items()}}
 
+# --- RESTART ENDPOINT (Admin Updates) ---
 @app.post("/restart/{cam_id}")
 def restart_camera(cam_id: str):
-    # 1. Kill existing
+    # 1. find context in local config
+    target_lot_id = None
+    for lot_id, lot_data in node_config.get('parking_lots', {}).items():
+        if cam_id in lot_data.get('cameras', {}):
+            target_lot_id = lot_id
+            break
+            
+    if not target_lot_id:
+        raise HTTPException(status_code=404, detail="Camera ID not found")
+
+    # 2. kill old worker
     if cam_id in processes:
-        p = processes[cam_id]
-        if p.is_alive():
-            p.terminate()
-            p.join()
+        if processes[cam_id].is_alive():
+            processes[cam_id].terminate()
+            processes[cam_id].join()
+
+    # 3. fetch fresh truth from firebase
+    node_name = node_config['node_name']
     
-    # 2. Find config for this camera
-    # (In the future, we fetch this from Firebase 'config' path)
-    target_cam = next((c for c in node_config.get('cameras', []) if c['id'] == cam_id), None)
+    # A. get lot capacities
+    try:
+        lot_cap_ref = db.reference(f"locations/{node_name}/config/parking_lots/{target_lot_id}/capacities")
+        new_caps = lot_cap_ref.get()
+        if new_caps:
+            node_config['parking_lots'][target_lot_id]['capacities'] = new_caps
+
+        # B. get camera specifics (polygons, lines)
+        cam_ref = db.reference(f"locations/{node_name}/config/parking_lots/{target_lot_id}/cameras/{cam_id}")
+        new_cam_data = cam_ref.get()
+        
+        if new_cam_data:
+            # merge updates into memory
+            node_config['parking_lots'][target_lot_id]['cameras'][cam_id].update(new_cam_data)
+        else:
+            logger.warning("Firebase config missing for restart. Using cached.")
+
+    except Exception as e:
+        logger.error(f"Failed to fetch update from Firebase: {e}")
+        # continue with cached data if network fails
+
+    # 4. re-Spawn
+    full_cam_config = node_config['parking_lots'][target_lot_id]['cameras'][cam_id]
     
-    if target_cam:
-        # 3. Spawn new
-        start_single_camera(target_cam)
-        return {"status": "Restarted", "id": cam_id}
-    
-    return {"error": "Camera Config not found"}
+    # re-inject critical context
+    full_cam_config['id'] = cam_id
+    full_cam_config['lot_id'] = target_lot_id
+    full_cam_config['lot_type'] = node_config['parking_lots'][target_lot_id]['type']
+    full_cam_config['lot_capacities'] = node_config['parking_lots'][target_lot_id]['capacities']
+
+    if full_cam_config.get('enabled', True):
+        # note: start_single_camera automatically injects 'force_startup_snapshot': True
+        # and fetches 'initial_state' (counts) if it's a gate.
+        start_single_camera(full_cam_config)
+        return {"status": "restarted", "source": "firebase_fresh"}
+    else:
+        return {"status": "stopped", "reason": "disabled_in_firebase"}
 
 if __name__ == "__main__":
     import uvicorn
-    # uvicorn runs FastAPI, and the lifespan context manager handles the cleanup.
-    # signal handlers are primarily for non-uvicorn ways of stopping the script.
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)

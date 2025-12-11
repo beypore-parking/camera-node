@@ -12,9 +12,9 @@ This schema is designed for a **Realtime Database (Firebase)**. It follows a str
 
 ```jsonc
 {
-  "locations": {
-    // PHYSICAL EDGE NODE IDENTIFIER
-    "Node_01_Main_Campus": {
+    "locations": {
+      // PHYSICAL EDGE NODE IDENTIFIER
+      "Node_01_Main_Campus": {
       // ==========================================
       // SECTION 1: SYSTEM HEALTH (Heartbeat)
       // ==========================================
@@ -77,7 +77,6 @@ This schema is designed for a **Realtime Database (Firebase)**. It follows a str
                 "role": "gate_counter", // Uses Lines
                 "rtsp_url": "rtsp://admin:pass@192.168.1.102/stream1",
                 "gate_logic": {
-                  "mode": "entry_only", // "entry_only" | "exit_only" | "combined"
                   "line_coords": [100, 500, 800, 500]
                   // Crossing this line increments 'total_in' for Lot A
                 }
@@ -89,7 +88,6 @@ This schema is designed for a **Realtime Database (Firebase)**. It follows a str
                 "role": "gate_counter",
                 "rtsp_url": "rtsp://admin:pass@192.168.1.103/stream1",
                 "gate_logic": {
-                  "mode": "exit_only",
                   "line_coords": [50, 200, 400, 200]
                   // Crossing this line increments 'total_out' for Lot A
                 }

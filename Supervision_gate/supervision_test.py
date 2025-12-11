@@ -79,6 +79,8 @@ def main():
             3
         )
 
+        cv2.imshow("Parking System", annotated_frame) 
+        
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 

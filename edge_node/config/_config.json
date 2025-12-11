@@ -1,0 +1,103 @@
+{
+  "node_name": "dev-1",
+  "firebase_db_url": "https://parking-app-cd0f0-default-rtdb.firebaseio.com/",
+  "firebase_storage_bucket": "https://www.google.com/url?sa=E&source=gmail&q=parking-app-cd0f0.appspot.com",
+  "parking_lots": {
+    "lot_A_faculty": {
+      "enabled": true,
+      "display_name": "Faculty Parking Lot A",
+      "type": "offstreet",
+      "lat": 11.321,
+      "long": 75.933,
+      "capacities": {
+        "car": 50,
+        "bike": 20,
+        "big_car": 5
+      },
+      "cameras": {
+        "cam_01": {
+          "enabled": false,
+          "role": "occupancy_tracker",
+          "rtsp_url": "rtsp://admin:pass@192.168.1.101/stream1",
+          "polygons": {
+            "C1": {
+              "type": "car",
+              "points": [
+                [0, 0],
+                [10, 10],
+                [10, 0]
+              ]
+            },
+            "C2": {
+              "type": "car",
+              "points": [
+                [20, 20],
+                [30, 30],
+                [30, 20]
+              ]
+            }
+          }
+        }
+      }
+    },
+    "lot_B_market_road": {
+      "enabled": false,
+      "display_name": "Market Road Curbside",
+      "type": "onstreet",
+      "lat": 11.325,
+      "long": 75.938,
+      "capacities": {
+        "total_length_units": 100
+      },
+      "cameras": {
+        "cam_04_street_view": {
+          "enabled": true,
+          "role": "linear_tracker",
+          "rtsp_url": "rtsp://admin:pass@192.168.1.104/stream1",
+          "roi_polygon": [
+            [0, 0],
+            [1920, 0],
+            [1920, 500],
+            [0, 500]
+          ],
+          "calibration": {
+            "pixels_per_unit": 50
+          }
+        }
+      }
+    },
+    "lot_C_faculty": {
+      "enabled": true,
+      "display_name": "Faculty Parking Lot C",
+      "type": "gate",
+      "lat": 11.321,
+      "long": 75.933,
+      "capacities": {
+        "combined": false,
+        "car": 50,
+        "bike": 20,
+        "total": null
+      },
+      "cameras": {
+        "cam_02_front_gate": {
+          "enabled": true,
+          "role": "gate_counter",
+          "rtsp_url": "rtsp://admin:pass@192.168.1.102/stream1",
+          "gate_logic": {
+            "line_coords": [100, 500, 800, 500],
+            "direction": "top_to_bottom"
+          }
+        },
+        "cam_03_back_gate": {
+          "enabled": true,
+          "role": "gate_counter",
+          "rtsp_url": "rtsp://admin:pass@192.168.1.103/stream1",
+          "gate_logic": {
+            "line_coords": [50, 200, 400, 200],
+            "direction": "top_to_bottom"
+          }
+        }
+      }
+    }
+  }
+}

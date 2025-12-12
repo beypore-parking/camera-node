@@ -249,5 +249,5 @@ def config_monitor_loop(node_config, stop_event):
         except Exception as e:
             logger.error(f"Config Monitor Error: {e}")
         
-        # vheck every 15 seconds 
-        time.sleep(15)
+        # vheck every 10 seconds 
+        time.sleep(10)

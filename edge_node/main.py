@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
         daemon=True
     )
     config_thread.start()
-    
+
     yield
     pm.perform_cleanup(sync_thread)
     
@@ -83,66 +83,6 @@ def home():
 @app.get("/health")
 def health_check():
     return {"processes": {k: v.is_alive() for k, v in pm.processes.items()}}
-
-# --- RESTART ENDPOINT (Admin Updates) ---
-@app.post("/restart/{cam_id}")
-def restart_camera(cam_id: str):
-    # 1. find context in local config
-    target_lot_id = None
-    for lot_id, lot_data in node_config.get('parking_lots', {}).items():
-        if cam_id in lot_data.get('cameras', {}):
-            target_lot_id = lot_id
-            break
-            
-    if not target_lot_id:
-        raise HTTPException(status_code=404, detail="Camera ID not found")
-
-    # 2. kill old worker
-    if cam_id in pm.processes:
-        if pm.processes[cam_id].is_alive():
-            pm.processes[cam_id].terminate()
-            pm.processes[cam_id].join()
-
-    # 3. fetch fresh truth from firebase
-    node_name = node_config['node_name']
-    
-    # A. get lot capacities
-    try:
-        lot_cap_ref = db.reference(f"locations/{node_name}/config/parking_lots/{target_lot_id}/capacities")
-        new_caps = lot_cap_ref.get()
-        if new_caps:
-            node_config['parking_lots'][target_lot_id]['capacities'] = new_caps
-
-        # B. get camera specifics (polygons, lines)
-        cam_ref = db.reference(f"locations/{node_name}/config/parking_lots/{target_lot_id}/cameras/{cam_id}")
-        new_cam_data = cam_ref.get()
-        
-        if new_cam_data:
-            # merge updates into memory
-            node_config['parking_lots'][target_lot_id]['cameras'][cam_id].update(new_cam_data)
-        else:
-            logger.warning("Firebase config missing for restart. Using cached.")
-
-    except Exception as e:
-        logger.error(f"Failed to fetch update from Firebase: {e}")
-        # continue with cached data if network fails
-
-    # 4. re-Spawn
-    full_cam_config = node_config['parking_lots'][target_lot_id]['cameras'][cam_id]
-    
-    # re-inject critical context
-    full_cam_config['id'] = cam_id
-    full_cam_config['lot_id'] = target_lot_id
-    full_cam_config['lot_type'] = node_config['parking_lots'][target_lot_id]['type']
-    full_cam_config['lot_capacities'] = node_config['parking_lots'][target_lot_id]['capacities']
-
-    if full_cam_config.get('enabled', True):
-        # note: start_single_camera automatically injects 'force_startup_snapshot': True
-        # and fetches 'initial_state' (counts) if it's a gate.
-        pm.start_single_camera(full_cam_config, node_config)
-        return {"status": "restarted", "source": "firebase_fresh"}
-    else:
-        return {"status": "stopped", "reason": "disabled_in_firebase"}
 
 if __name__ == "__main__":
     import uvicorn

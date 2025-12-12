@@ -13,7 +13,7 @@ def setup_worker_logger(cam_id):
     logger = logging.getLogger(f"Worker-{cam_id}")
     logger.setLevel(logging.INFO) 
     
-    # FIX: Add Handler to ensure logs appear in console
+    # add gandler to ensure logs appear in console
     if not logger.handlers:
         handler = logging.StreamHandler()
         handler.setFormatter(NodeFormatter())
@@ -30,7 +30,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
     lot_id = cam_config['lot_id']
     rtsp_url = cam_config.get('rtsp_url')
     
-    # Check if this is a development video file
+    # check if this is a video file (ONLY ON DEV)
     is_video_file = str(rtsp_url).endswith('.mp4')
     
     # logic and capacity
@@ -54,7 +54,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         model = YOLO("yolov8n.pt")
         tracker = sv.ByteTrack()
         
-        # Annotators for visualization (Dev Mode & Snapshots)
+        # annotators for visualization (dev Mode and snapshots)
         box_annotator = sv.BoxAnnotator()
         label_annotator = sv.LabelAnnotator()
         line_zone_annotator = sv.LineZoneAnnotator(thickness=2, text_thickness=2, text_scale=0.5)
@@ -63,17 +63,14 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         start_point = sv.Point(x=line_coords[0], y=line_coords[1]) 
         end_point = sv.Point(x=line_coords[2], y=line_coords[3])
         
-        # --- FIX: Initialize LineZone, then set internal attributes ---
+        # initialize LineZone and THEN set internal attributes - need to do this for the counting
         line_zone = sv.LineZone(
             start=start_point, 
             end=end_point,
         )
         line_zone._in_count = initial_in_count
         line_zone._out_count = initial_out_count
-        # --- END FIX ---
 
-        # If it's a file, we might want to loop it or just play it once. 
-        # Standard cv2.VideoCapture works for both files and RTSP.
         cap = cv2.VideoCapture(rtsp_url)
         
         if not cap.isOpened():
@@ -98,7 +95,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         
         if not ret:
             if is_video_file:
-                # Loop video file for dev purposes
+                # loop video file for dev purposes
                 worker_logger.info("Video ended, restarting loop...")
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 continue
@@ -127,12 +124,12 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 debug_frame = frame.copy()
                 labels = [f"#{tracker_id}" for tracker_id in detections.tracker_id]
                 
-                # Draw boxes/labels/lines
+                # draw boxes/labels/lines
                 debug_frame = box_annotator.annotate(debug_frame, detections)
                 debug_frame = label_annotator.annotate(debug_frame, detections, labels)
                 line_zone_annotator.annotate(debug_frame, line_counter=line_zone)
                 
-                # Resize to ~640px width
+                # resize to ~640px width
                 height, width = debug_frame.shape[:2]
                 new_width = 640
                 new_height = int(height * (new_width / width))
@@ -156,19 +153,10 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 
                 worker_logger.info(f"COUNT CHANGE: {direction} x{delta}. Occupancy: {net_occupancy}/{total_spots}")
 
-                event_payload = {
-                    "cam_id": cam_id,
-                    "direction": direction,
-                    "net_change": delta,
-                    "timestamp": datetime.now().isoformat(),
-                    "occupancy": net_occupancy,
-                    "available": available_spots
-                }
                 data_queue.put({
                     "id": cam_id,
                     "lot_id": lot_id,
                     "type": "gate_event",
-                    "data": event_payload
                 })
 
                 occupancy_payload = {

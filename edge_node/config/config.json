@@ -21,15 +21,6 @@
             "line_coords": [74, 959, 1872, 81],
             "direction": "top_to_bottom"
           }
-        },
-        "cam_02_back_gate": {
-          "enabled": true,
-          "role": "gate_counter",
-          "rtsp_url": "vid2.mp4",
-          "gate_logic": {
-            "line_coords": [57, 677, 1895, 671],
-            "direction": "top_to_bottom"
-          }
         }
       }
     }

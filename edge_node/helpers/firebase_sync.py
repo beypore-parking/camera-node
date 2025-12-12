@@ -27,17 +27,13 @@ def init_firebase(node_config):
 
 # --- hybird sync logic ---
 def sync_config_state(node_config):
-    # 1. pushes local truth (lat/long/identity) to firebase.
-    # 2. pulls cloud truth (polygons/rules) to local memory.
-
     node_name = node_config.get('node_name')
     if not node_name: return
 
     logger.info("Starting Configuration Sync (Hybrid Mode)...")
     
-    # reference to the cloud config
     cloud_config_ref = db.reference(f"locations/{node_name}/config/parking_lots")
-    cloud_data = cloud_config_ref.get()
+    cloud_data = cloud_config_ref.get() or {} # ensure it's a dict even if empty
 
     # IF FIRST RUN: upload local config as baseline
     if not cloud_data:
@@ -45,14 +41,13 @@ def sync_config_state(node_config):
         cloud_config_ref.set(node_config.get('parking_lots', {}))
         return 
 
-    # IF SUBSEQUENT RUN: merge
     local_lots = node_config.get('parking_lots', {})
     
+    # 1. iterate through local config parking lots (the source of truth for hardware)
     for lot_id, local_data in local_lots.items():
         base_path = f"locations/{node_name}/config/parking_lots/{lot_id}"
         
-        # A. ENFORCE LOCAL TRUTH -> push to firebase
-        # physical location and hardware identity never change from the cloud side so we just keep it
+        # A. push local hardware truth (create/update)
         db.reference(base_path).update({
             "lat": local_data.get('lat'),
             "long": local_data.get('long'),
@@ -60,34 +55,53 @@ def sync_config_state(node_config):
             "type": local_data.get('type')
         })
 
-        # B. ENFORCE CLOUD TRUTH -> pull to memory
-        cloud_lot = cloud_data.get(lot_id)
-        if cloud_lot:
-            # overwrite capacities
-            if 'capacities' in cloud_lot:
-                node_config['parking_lots'][lot_id]['capacities'] = cloud_lot['capacities']
-            
-            # overwrite enabled status
-            if 'enabled' in cloud_lot:
-                node_config['parking_lots'][lot_id]['enabled'] = cloud_lot['enabled']
+        local_cameras = local_data.get('cameras', {})
+        for cam_id, cam_data in local_cameras.items():
+            cam_base_path = f"{base_path}/cameras/{cam_id}"
+            db.reference(cam_base_path).update({
+                "rtsp_url": cam_data.get('rtsp_url'),
+                "role": cam_data.get('role', 'gate_counter'),
+            })
 
-            # overwrite Camera logic (polygons/lines)
-            cloud_cameras = cloud_lot.get('cameras', {})
-            local_cameras = local_data.get('cameras', {})
+        # B. pull cloud logic truth (sync rules)
+        cloud_lot = cloud_data.get(lot_id, {})
+        
+        if 'capacities' in cloud_lot:
+            node_config['parking_lots'][lot_id]['capacities'] = cloud_lot['capacities']
+        if 'enabled' in cloud_lot:
+            node_config['parking_lots'][lot_id]['enabled'] = cloud_lot['enabled']
+
+        cloud_cameras = cloud_lot.get('cameras', {})
+        
+        for cam_id, local_cam in local_cameras.items():
+            if cam_id in cloud_cameras:
+                cloud_cam = cloud_cameras[cam_id]
+                # pull polygon/enable disable overrides
+                if 'polygons' in cloud_cam:
+                        node_config['parking_lots'][lot_id]['cameras'][cam_id]['polygons'] = cloud_cam['polygons']
+                if 'gate_logic' in cloud_cam:
+                    node_config['parking_lots'][lot_id]['cameras'][cam_id]['gate_logic'] = cloud_cam['gate_logic']
+                if 'roi_polygon' in cloud_cam:
+                    node_config['parking_lots'][lot_id]['cameras'][cam_id]['roi_polygon'] = cloud_cam['roi_polygon']
+                if 'enabled' in cloud_cam:
+                        node_config['parking_lots'][lot_id]['cameras'][cam_id]['enabled'] = cloud_cam['enabled']
+
+        # C. CLEANUP (delete removed cameras)
+        # compare keys: if it's in cloud but NOT in Local, delete it.
+        if cloud_cameras:
+            cloud_cam_ids = set(cloud_cameras.keys())
+            local_cam_ids = set(local_cameras.keys())
             
-            for cam_id, local_cam in local_cameras.items():
-                if cam_id in cloud_cameras:
-                    cloud_cam = cloud_cameras[cam_id]
-                    
-                    # merge logic fields
-                    if 'polygons' in cloud_cam:
-                            node_config['parking_lots'][lot_id]['cameras'][cam_id]['polygons'] = cloud_cam['polygons']
-                    if 'gate_logic' in cloud_cam:
-                        node_config['parking_lots'][lot_id]['cameras'][cam_id]['gate_logic'] = cloud_cam['gate_logic']
-                    if 'roi_polygon' in cloud_cam:
-                        node_config['parking_lots'][lot_id]['cameras'][cam_id]['roi_polygon'] = cloud_cam['roi_polygon']
-                    if 'enabled' in cloud_cam:
-                            node_config['parking_lots'][lot_id]['cameras'][cam_id]['enabled'] = cloud_cam['enabled']
+            # identify cameras to remove
+            cameras_to_delete = cloud_cam_ids - local_cam_ids
+            
+            for cam_id_to_remove in cameras_to_delete:
+                logger.warning(f"Deleting removed camera from Cloud: {cam_id_to_remove}")
+                # remove from firebase config
+                db.reference(f"{base_path}/cameras/{cam_id_to_remove}").delete()
+                
+                # remove from live_status too
+                db.reference(f"locations/{node_name}/live_status/{lot_id}/snapshots/{cam_id_to_remove}").delete()
 
     logger.info("Sync Complete. Local memory aligned with Cloud Logic.")
 
@@ -142,9 +156,6 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                         "timestamp": ts 
                     })
                     logger.info(f"Snapshot uploaded for {cam_id}")
-
-                elif p_type == 'gate_event':
-                    db.reference(f"{base_ref}/gate_events/{lot_id}").push(data)
 
                 elif p_type == 'slot_update':
                         db.reference(f"{base_ref}/live_status/{lot_id}/slots").update(data)

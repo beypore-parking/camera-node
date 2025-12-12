@@ -64,7 +64,14 @@ async def lifespan(app: FastAPI):
     )
     hb_thread.start()
 
-    yield 
+    config_thread = threading.Thread(
+        target=fb.config_monitor_loop,
+        args=(node_config, pm.stop_event),
+        daemon=True
+    )
+    config_thread.start()
+    
+    yield
     pm.perform_cleanup(sync_thread)
     
 app = FastAPI(lifespan=lifespan)

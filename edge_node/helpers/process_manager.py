@@ -11,6 +11,18 @@ processes = {}
 data_queue = multiprocessing.Queue()
 stop_event = multiprocessing.Event()
 
+# helper to stop a specific worker 
+def stop_worker(cam_id):
+    if cam_id in processes:
+        p = processes[cam_id]
+        if p.is_alive():
+            logger.info(f"Stopping worker: {cam_id}...")
+            p.terminate()
+            p.join(timeout=2)
+            if p.is_alive():
+                p.kill() # Force kill if stuck
+        del processes[cam_id]
+
 # --- process manager ---
 def start_single_camera(cam_config, node_config):
     cam_id = cam_config['id']
@@ -41,6 +53,9 @@ def start_single_camera(cam_config, node_config):
         worker_label = "GATE"
     
     if target_func:
+        # STOP THE OLD PROCESS IF IT EXISTS VERY IMPORTATNY 
+        stop_worker(cam_id)
+
         p = multiprocessing.Process(
             target=target_func,
             args=(cam_config, data_queue, node_config['node_name'], stop_event),

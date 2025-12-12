@@ -1,6 +1,7 @@
 import cv2
 import time
 import logging
+import signal
 from ultralytics import YOLO
 import supervision as sv
 from datetime import datetime
@@ -23,6 +24,10 @@ def setup_worker_logger(cam_id):
 
 # --- main worker function ---
 def run_gate_worker(cam_config, data_queue, node_name, stop_event):
+    # NECESSAERY TO PREVENT SHUTDOWN BUGS
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
     worker_logger = setup_worker_logger(cam_config['id'])
     
     # 1. extract config
@@ -141,7 +146,8 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
             
             # 4. detect and publish changes
             if line_zone.in_count != current_in_count or line_zone.out_count != current_out_count:
-                net_occupancy = line_zone.in_count - line_zone.out_count
+                raw_occupancy = line_zone.in_count - line_zone.out_count                
+                net_occupancy = max(0, raw_occupancy)
                 available_spots = total_spots - net_occupancy
                 
                 if line_zone.in_count > current_in_count:

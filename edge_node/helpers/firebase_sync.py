@@ -4,6 +4,7 @@ import firebase_admin
 from datetime import datetime
 from firebase_admin import credentials, db, storage
 from helpers.logger import logger
+import helpers.process_manager as pm
 
 # --- firebase setup ---
 def init_firebase(node_config):
@@ -183,3 +184,70 @@ def heartbeat_loop(node_config, stop_event):
                 })
         except Exception: pass 
         time.sleep(60)
+
+def config_monitor_loop(node_config, stop_event):
+    node_name = node_config.get('node_name')
+    if not node_name: return
+
+    logger.info("Starting Remote Config Monitor...")
+
+    while not stop_event.is_set():
+        try:
+            # 1. fetch the full config to check for flags
+            # we need to fetch the whole lot structure to ensure we get the latest polygons too
+            cloud_ref = db.reference(f"locations/{node_name}/config/parking_lots")
+            cloud_data = cloud_ref.get()
+
+            if cloud_data:
+                # iterate through cloud lots
+                for lot_id, lot_data in cloud_data.items():
+                    cloud_cameras = lot_data.get('cameras', {})
+                    
+                    for cam_id, cam_data in cloud_cameras.items():
+                        
+                        # CHECK FLAG
+                        if cam_data.get('restart_required') is True:
+                            logger.warning(f"Config change detected for {cam_id}. Applying update...")
+
+                            # A. UPDATE LOCAL MEMORY (the polygon/logic)
+                            # we must update the node_config object so the new worker gets the new data
+                            if lot_id in node_config['parking_lots']:
+                                if cam_id in node_config['parking_lots'][lot_id]['cameras']:
+                                    
+                                    # update specific logic fields
+                                    target_cam = node_config['parking_lots'][lot_id]['cameras'][cam_id]
+                                    
+                                    if 'polygons' in cam_data: target_cam['polygons'] = cam_data['polygons']
+                                    if 'gate_logic' in cam_data: target_cam['gate_logic'] = cam_data['gate_logic']
+                                    if 'roi_polygon' in cam_data: target_cam['roi_polygon'] = cam_data['roi_polygon']
+                                    if 'enabled' in cam_data: target_cam['enabled'] = cam_data['enabled']
+                                    if 'rtsp_url' in cam_data: target_cam['rtsp_url'] = cam_data['rtsp_url']
+
+                            # B. RESTART THE WORKER
+                            # 1. prepare the full config payload
+                            full_cam_config = node_config['parking_lots'][lot_id]['cameras'][cam_id]
+                            
+                            # 2. re-inject context (ID, Lot ID, Capacities)
+                            full_cam_config['id'] = cam_id
+                            full_cam_config['lot_id'] = lot_id
+                            full_cam_config['lot_type'] = node_config['parking_lots'][lot_id]['type']
+                            full_cam_config['lot_capacities'] = node_config['parking_lots'][lot_id].get('capacities', {})
+
+                            # 3. trigger restart via process manager
+                            if full_cam_config.get('enabled', True):
+                                pm.start_single_camera(full_cam_config, node_config)
+                            else:
+                                pm.stop_worker(cam_id)
+                                logger.info(f"Camera {cam_id} disabled by remote config.")
+
+                            # C. RESET THE FLAG
+                            db.reference(f"locations/{node_name}/config/parking_lots/{lot_id}/cameras/{cam_id}").update({
+                                "restart_required": False
+                            })
+                            logger.info(f"Update applied for {cam_id}. Flag cleared.")
+
+        except Exception as e:
+            logger.error(f"Config Monitor Error: {e}")
+        
+        # vheck every 15 seconds 
+        time.sleep(15)

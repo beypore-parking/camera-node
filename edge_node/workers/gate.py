@@ -17,7 +17,7 @@ def setup_worker_logger(cam_id):
     # add gandler to ensure logs appear in console
     if not logger.handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(NodeFormatter())
+        handler.setFormatter(NodeFormatter())   
         logger.addHandler(handler)
     
     return logging.LoggerAdapter(logger, {'location_name': cam_id})
@@ -42,14 +42,13 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
     gate_logic = cam_config.get('gate_logic', {})
     line_coords = gate_logic.get('line_coords', []) # [x1, y1, x2, y2]
     
+    # we still use this so the video overlay doesn't reset to 0 -> only in dev mode tho
     initial_counts = cam_config.get('initial_state', {})
-    total_spots = cam_config.get('lot_capacities', {}).get('total', 0)
-    
     initial_in_count = initial_counts.get('in_count', 0)
     initial_out_count = initial_counts.get('out_count', 0)
     
-    worker_logger.info(f"Worker initialized. Total spots: {total_spots}. Starting IN/OUT from: {initial_in_count}/{initial_out_count}")
-    
+    worker_logger.info(f"Worker initialized. Local history: IN {initial_in_count} / OUT {initial_out_count}")
+        
     if len(line_coords) != 4 or not rtsp_url:
         worker_logger.error("Missing critical configuration (RTSP URL or line coordinates). Exiting.")
         return
@@ -124,7 +123,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
             detections = tracker.update_with_detections(detections)
             line_zone.trigger(detections)
             
-            # --- DEV VIEWER (Only if mp4) ---
+            # --- DEV VIEWER (only if mp4 is given in the config) ---
             if is_video_file:
                 debug_frame = frame.copy()
                 labels = [f"#{tracker_id}" for tracker_id in detections.tracker_id]
@@ -146,68 +145,59 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
             
             # 4. detect and publish changes
             if line_zone.in_count != current_in_count or line_zone.out_count != current_out_count:
-                raw_occupancy = line_zone.in_count - line_zone.out_count                
-                net_occupancy = max(0, raw_occupancy)
-                available_spots = total_spots - net_occupancy
-                
+                # determine delta
+                delta = 0
+                direction = "NONE"
+                # detect the delta as -1 and +1 and send it ot the process manager where it'll be counted
                 if line_zone.in_count > current_in_count:
                     direction = "IN"
-                    delta = line_zone.in_count - current_in_count
-                else:
+                    delta = 1
+                elif line_zone.out_count > current_out_count:
                     direction = "OUT"
-                    delta = line_zone.out_count - current_out_count
+                    delta = -1
                 
-                worker_logger.info(f"COUNT CHANGE: {direction} x{delta}. Occupancy: {net_occupancy}/{total_spots}")
+                worker_logger.info(f"VEHICLE DETECTED: {direction} (Delta: {delta})")
 
+                # send delta payload
+                # we're not sending the total, just the change.
+                # this allows multiple cameras to simply "vote" to change the number.
                 data_queue.put({
                     "id": cam_id,
                     "lot_id": lot_id,
-                    "type": "gate_event",
-                })
-
-                occupancy_payload = {
-                    "in_count": line_zone.in_count,
-                    "out_count": line_zone.out_count,
-                    "net_occupancy": net_occupancy,
-                    "available_spots": available_spots
-                }
-                data_queue.put({
-                    "id": cam_id,
-                    "lot_id": lot_id,
-                    "type": "occupancy_update",
-                    "data": occupancy_payload
+                    "type": "count_delta",
+                    "data": {
+                        "delta": delta,
+                        # we still send these for the "visual" history of this specific camera
+                        "local_in": line_zone.in_count,
+                        "local_out": line_zone.out_count
+                    }
                 })
                 
-                last_snapshot_time = 0 
+                last_snapshot_time = 0
 
             # 5. handle snapshots
             if time.time() - last_snapshot_time > snapshot_interval_sec or cam_config.get('force_startup_snapshot'):
                 
-                if cam_config.get('force_startup_snapshot'):
-                    cam_config['force_startup_snapshot'] = False
+                if cam_config.get('force_startup_snapshot'): cam_config['force_startup_snapshot'] = False
                 
                 annotated_frame = frame.copy()
                 line_zone_annotator.annotate(annotated_frame, line_counter=line_zone)
-                
-                cv2.putText(annotated_frame, f"IN: {line_zone.in_count} | OUT: {line_zone.out_count}", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4)
+                # Overlay local counts
+                cv2.putText(annotated_frame, f"LOCAL HIST - IN: {line_zone.in_count} | OUT: {line_zone.out_count}", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
                 
                 ret_code, image_buffer = cv2.imencode(".jpg", annotated_frame)
                 if ret_code:
-                    snapshot_data = {
-                        "image_bytes": image_buffer.tobytes(),
-                        "timestamp": datetime.now().isoformat()
-                    }
                     data_queue.put({
-                        "id": cam_id,
-                        "lot_id": lot_id,
-                        "type": "snapshot",
-                        "data": snapshot_data
+                        "id": cam_id, 
+                        "lot_id": lot_id, 
+                        "type": "snapshot", 
+                        "data": {"image_bytes": image_buffer.tobytes(), "timestamp": datetime.now().isoformat()}
                     })
                     last_snapshot_time = time.time()
                 
         except Exception as e:
             worker_logger.error(f"Processing loop error: {e}")
-            time.sleep(5) 
+            time.sleep(5)
 
     cap.release()
     cv2.destroyAllWindows()

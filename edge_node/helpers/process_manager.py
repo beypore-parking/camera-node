@@ -4,11 +4,13 @@ from workers.offstreet import run_offstreet_worker
 from workers.onstreet import run_onstreet_worker
 from workers.gate import run_gate_worker
 from helpers.logger import logger
-from helpers.firebase_sync import get_current_counts
+from helpers.firebase_sync import get_camera_history
 
 # --- global state ---
 processes = {}
-data_queue = multiprocessing.Queue()
+# user manager queue to prevent deadlocks that arise with the normal queue -> the bug where the total occupancy doesnt get udpated when the workder restarts
+_manager = multiprocessing.Manager()
+data_queue = _manager.Queue()
 stop_event = multiprocessing.Event()
 
 # helper to stop a specific worker 
@@ -18,9 +20,10 @@ def stop_worker(cam_id):
         if p.is_alive():
             logger.info(f"Stopping worker: {cam_id}...")
             p.terminate()
+            # still a short jointime
             p.join(timeout=2)
             if p.is_alive():
-                p.kill() # Force kill if stuck
+                p.kill() # force kill if stuck
         del processes[cam_id]
 
 # --- process manager ---
@@ -33,11 +36,11 @@ def start_single_camera(cam_config, node_config):
     # the worker logic must check this flag and send a snapshot immediately on startup
     cam_config['force_startup_snapshot'] = True
 
-    # 2. INJECT PERSISTENT STATE (For Gates)
+    # 2. INJECT PERSISTENT STATE (gor gates)
     if lot_type == 'gate':
-        current_counts = get_current_counts(node_config, lot_id)
-        cam_config['initial_state'] = current_counts
-        logger.info(f"Injecting initial state for {cam_id}: {current_counts}")
+        history = get_camera_history(node_config, lot_id, cam_id)
+        cam_config['initial_state'] = history
+        logger.info(f"Injecting history for {cam_id}: {history}")
 
     target_func = None
     worker_label = ""

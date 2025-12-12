@@ -106,7 +106,7 @@ def sync_config_state(node_config):
 
     logger.info("Sync Complete. Local memory aligned with Cloud Logic.")
 
-# --- persistant counts ---
+# --- persistant counts --- WE DONT USE THIS ANYMORE 
 def get_current_counts(node_config, lot_id):
     # fetches current occupancy numbers from firebase. 
     # needed for gate workers to not reset to 0 on restart.
@@ -126,6 +126,17 @@ def get_current_counts(node_config, lot_id):
         # return a safe default on failure
         return {'in_count': 0, 'out_count': 0}
 
+# helper to get camera history
+def get_camera_history(node_config, lot_id, cam_id):
+    node_name = node_config.get('node_name')
+    try:
+        # Note the path change: fetching specific camera history
+        ref = db.reference(f"locations/{node_name}/live_status/{lot_id}/occupancy/cameras/{cam_id}")
+        data = ref.get()
+        return data if data else {'in_count': 0, 'out_count': 0}
+    except:
+        return {'in_count': 0, 'out_count': 0}
+
 # --- firebase data sync loop ---
 def firebase_sync_loop(node_config, data_queue, stop_event):
     node_name = node_config.get('node_name')
@@ -135,17 +146,54 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                 payload = data_queue.get()
                 cam_id = payload.get('id')
                 lot_id = payload.get('lot_id')
-                p_type = payload.get('type', 'status')
+                p_type = payload.get('type')
                 data = payload.get('data')
 
-                if not node_name: continue
                 base_ref = f"locations/{node_name}"
 
-                # snapshot Handler
-                if p_type == 'snapshot':
+                # --- delta logic handler ---
+                if p_type == 'count_delta':
+                    delta = data.get('delta')
+                    local_in = data.get('local_in')   # for local persistence
+                    local_out = data.get('local_out') # for local persistence
+
+                    # 1. update the local camera history ie in/out counts for that specific camera
+                    # so when the worker restarts, it remembers its OWN history
+                    db.reference(f"{base_ref}/live_status/{lot_id}/occupancy/cameras/{cam_id}").update({
+                        "in_count": local_in,
+                        "out_count": local_out
+                    })
+
+                    # 2. update the GLOBAL parking lot occupancy
+                    occ_ref = db.reference(f"{base_ref}/live_status/{lot_id}/occupancy")
+
+                    def transaction_logic(current_data):
+                        if not current_data:
+                            current_data = {"net_occupancy": 0}
+                        
+                        # get current and apply delta
+                        current_net = current_data.get('net_occupancy', 0)                        
+                        new_net = current_net + delta
+                        
+                        # if people leave BEFORE people come in, it stays at 0 and when the next person comes in, it becomes 1
+                        if new_net < 0:
+                            new_net = 0
+
+                        current_data['net_occupancy'] = new_net
+                        return current_data
+
+                    try:
+                        occ_ref.transaction(transaction_logic)
+                        logger.info(f"Global Occupancy Updated. Delta: {delta:+d}")
+                    except firebase_admin.db.TransactionError as e:
+                        logger.error(f"Transaction failed: {e}")
+
+                # snapshot handler
+                elif p_type == 'snapshot':
                     image_bytes = data.get('image_bytes')
                     ts = data.get('timestamp')
                     bucket = storage.bucket()
+
                     # path: snapshots/Node/Lot/Cam.jpg
                     blob = bucket.blob(f"snapshots/{node_name}/{lot_id}/{cam_id}.jpg")
                     blob.upload_from_string(image_bytes, content_type='image/jpeg')
@@ -157,14 +205,6 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                         "timestamp": ts 
                     })
                     logger.info(f"Snapshot uploaded for {cam_id}")
-
-                elif p_type == 'slot_update':
-                        db.reference(f"{base_ref}/live_status/{lot_id}/slots").update(data)
-                        db.reference(f"{base_ref}/live_status/{lot_id}").update({"last_updated": datetime.now().isoformat()})
-
-                elif p_type == 'occupancy_update':
-                    db.reference(f"{base_ref}/live_status/{lot_id}/occupancy").update(data)
-                    db.reference(f"{base_ref}/live_status/{lot_id}").update({"last_updated": datetime.now().isoformat()})
 
             time.sleep(0.05)
         except Exception as e:

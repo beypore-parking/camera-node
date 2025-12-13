@@ -130,12 +130,13 @@ def get_current_counts(node_config, lot_id):
 def get_camera_history(node_config, lot_id, cam_id):
     node_name = node_config.get('node_name')
     try:
-        # Note the path change: fetching specific camera history
+        # fetches the specific camera history (car_in, bike_in, etc)
         ref = db.reference(f"locations/{node_name}/live_status/{lot_id}/occupancy/cameras/{cam_id}")
         data = ref.get()
-        return data if data else {'in_count': 0, 'out_count': 0}
+        # return empty dict if null, ProcessManager will handle defaults
+        return data if data else {}
     except:
-        return {'in_count': 0, 'out_count': 0}
+        return {}
 
 # --- firebase data sync loop ---
 def firebase_sync_loop(node_config, data_queue, stop_event):
@@ -154,37 +155,59 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                 # --- delta logic handler ---
                 if p_type == 'count_delta':
                     delta = data.get('delta')
-                    local_in = data.get('local_in')   # for local persistence
-                    local_out = data.get('local_out') # for local persistence
+                    v_type = data.get('vehicle_type') # 'car' or 'bike'
+                    full_state = data.get('full_state', {})
 
-                    # 1. update the local camera history ie in/out counts for that specific camera
-                    # so when the worker restarts, it remembers its OWN history
-                    db.reference(f"{base_ref}/live_status/{lot_id}/occupancy/cameras/{cam_id}").update({
-                        "in_count": local_in,
-                        "out_count": local_out
-                    })
+                    # udpate local camera history
+                    # save the full state (car_in, bike_in, etc) to the camera node
+                    # this ensures that when the worker restarts, it gets these exact numbers back.
+                    cam_ref = db.reference(f"{base_ref}/live_status/{lot_id}/occupancy/cameras/{cam_id}")
+                    cam_ref.update(full_state)
 
-                    # 2. update the GLOBAL parking lot occupancy
+                    # update global parking lot occupancy
                     occ_ref = db.reference(f"{base_ref}/live_status/{lot_id}/occupancy")
+                    
+                    # check config for "Combined" vs "Separate" mode
+                    # if config is missing, default to True (Combined) for safety
+                    lot_caps = node_config['parking_lots'][lot_id].get('capacities', {})
+                    is_combined = lot_caps.get('combined', True) 
 
                     def transaction_logic(current_data):
                         if not current_data:
-                            current_data = {"net_occupancy": 0}
+                            current_data = {
+                                "net_occupancy": 0, 
+                                "car_occupancy": 0, 
+                                "bike_occupancy": 0
+                            }
                         
-                        # get current and apply delta
-                        current_net = current_data.get('net_occupancy', 0)                        
-                        new_net = current_net + delta
+                        # MODE 1: COMBINED
+                        if is_combined:
+                            # both cars and bikes affect the MAIN 'net_occupancy'
+                            current_net = current_data.get('net_occupancy', 0)                        
+                            new_net = current_net + delta
+                            if new_net < 0: new_net = 0
+                            current_data['net_occupancy'] = new_net
                         
-                        # if people leave BEFORE people come in, it stays at 0 and when the next person comes in, it becomes 1
-                        if new_net < 0:
-                            new_net = 0
+                        # MODE 2: SEPARATE
+                        else:
+                            if v_type == 'bike':
+                                curr = current_data.get('bike_occupancy', 0)
+                                new_val = curr + delta
+                                if new_val < 0: new_val = 0
+                                current_data['bike_occupancy'] = new_val
+                            else:
+                                # cars (and trucks/buses)
+                                curr = current_data.get('car_occupancy', 0)
+                                new_val = curr + delta
+                                if new_val < 0: new_val = 0
+                                current_data['car_occupancy'] = new_val
 
-                        current_data['net_occupancy'] = new_net
                         return current_data
 
                     try:
                         occ_ref.transaction(transaction_logic)
-                        logger.info(f"Global Occupancy Updated. Delta: {delta:+d}")
+                        mode_str = "COMBINED" if is_combined else "SEPARATE"
+                        logger.info(f"Occupancy Updated [{mode_str}]. Type: {v_type}, Delta: {delta:+d}")
                     except firebase_admin.db.TransactionError as e:
                         logger.error(f"Transaction failed: {e}")
 
@@ -194,12 +217,10 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                     ts = data.get('timestamp')
                     bucket = storage.bucket()
 
-                    # path: snapshots/Node/Lot/Cam.jpg
                     blob = bucket.blob(f"snapshots/{node_name}/{lot_id}/{cam_id}.jpg")
                     blob.upload_from_string(image_bytes, content_type='image/jpeg')
                     blob.make_public() 
                     
-                    # update the live status with the new image URL
                     db.reference(f"{base_ref}/live_status/{lot_id}/snapshots/{cam_id}").update({ 
                         "url": blob.public_url, 
                         "timestamp": ts 

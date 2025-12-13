@@ -13,6 +13,41 @@ DEFAULT_CONFIG_TEMPLATE = {
     "parking_lots": {} 
 }
 
+def validate_gate_logic(lot_id, cam_id, cam_data, lot_capacities):
+    """
+    Specific checks for Gate logic. Returns a list of warning strings.
+    """
+    warnings = []
+    
+    # check line coordinates
+    gate_logic = cam_data.get('gate_logic', {})
+    coords = gate_logic.get('line_coords', [])
+    if not coords or len(coords) != 4:
+         warnings.append(f"[{lot_id}][{cam_id}] Missing or invalid 'line_coords'. Camera will not count.")
+
+    # check capacity mode
+    if not lot_capacities:
+        warnings.append(f"[{lot_id}] No 'capacities' block defined.")
+    else:
+        is_combined = lot_capacities.get('combined')
+        
+        if is_combined is None:
+             warnings.append(f"[{lot_id}] 'capacities.combined' (true/false) is missing.")
+        
+        elif is_combined is True:
+            # check for total
+            if lot_capacities.get('total') is None:
+                warnings.append(f"[{lot_id}] Combined mode is TRUE, but 'total' capacity is missing.")
+        
+        elif is_combined is False:
+            # check for car/bike
+            if lot_capacities.get('car') is None:
+                warnings.append(f"[{lot_id}] Combined mode is FALSE, but 'car' capacity is missing.")
+            if lot_capacities.get('bike') is None:
+                warnings.append(f"[{lot_id}] Combined mode is FALSE, but 'bike' capacity is missing.")
+
+    return warnings
+
 def load_and_validate_config(config_path):
     # checks if config file exists.
     # if NOT, creates a dummy file and raises an error to stop the app.
@@ -55,10 +90,26 @@ def load_and_validate_config(config_path):
 
     if missing_fields:
         print("\n" + "x"*60)
-        print(f" CRITICAL CONFIG ERROR: The following fields are missing or default:")
-        print(f" -> {', '.join(missing_fields)}")
-        print(f" Please update '{config_path}' and restart.")
+        print(f" CRITICAL CONFIG ERROR: Missing fields -> {', '.join(missing_fields)}")
         print("x"*60 + "\n")
         return None
+
+    # allow the app to start but scream at them in the logs if they dont have soem fields
+    parking_lots = config.get('parking_lots', {})
+    
+    for lot_id, lot_data in parking_lots.items():
+        if not lot_data.get('enabled', False):
+            continue
+
+        lot_type = lot_data.get('type')
+        capacities = lot_data.get('capacities', {})
+        cameras = lot_data.get('cameras', {})
+
+        if lot_type == 'gate':
+            for cam_id, cam_data in cameras.items():
+                if cam_data.get('enabled', False):
+                    gate_warnings = validate_gate_logic(lot_id, cam_id, cam_data, capacities)
+                    for w in gate_warnings:
+                        logger.warning(w)
 
     return config

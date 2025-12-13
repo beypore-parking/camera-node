@@ -6,7 +6,7 @@ from ultralytics import YOLO
 import supervision as sv
 from datetime import datetime
 
-# Import NodeFormatter to maintain consistent output
+# import NodeFormatter to maintain consistent output
 from helpers.logger import NodeFormatter 
 
 # --- setup ---
@@ -43,11 +43,16 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
     line_coords = gate_logic.get('line_coords', []) # [x1, y1, x2, y2]
     
     # we still use this so the video overlay doesn't reset to 0 -> only in dev mode tho
-    initial_counts = cam_config.get('initial_state', {})
-    initial_in_count = initial_counts.get('in_count', 0)
-    initial_out_count = initial_counts.get('out_count', 0)
+    # load prebiosu counts
+    # look for specific keys in the history -> if missing default to 0
+    history = cam_config.get('initial_state', {})
     
-    worker_logger.info(f"Worker initialized. Local history: IN {initial_in_count} / OUT {initial_out_count}")
+    init_car_in = history.get('car_in', 0)
+    init_car_out = history.get('car_out', 0)
+    init_bike_in = history.get('bike_in', 0)
+    init_bike_out = history.get('bike_out', 0)
+    
+    worker_logger.info(f"Restored History -> CAR: {init_car_in}/{init_car_out} | BIKE: {init_bike_in}/{init_bike_out}")
         
     if len(line_coords) != 4 or not rtsp_url:
         worker_logger.error("Missing critical configuration (RTSP URL or line coordinates). Exiting.")
@@ -58,22 +63,27 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         model = YOLO("yolov8n.pt")
         tracker = sv.ByteTrack()
         
-        # annotators for visualization (dev Mode and snapshots)
+         # annotators for visualization (dev Mode and snapshots)
         box_annotator = sv.BoxAnnotator()
         label_annotator = sv.LabelAnnotator()
-        line_zone_annotator = sv.LineZoneAnnotator(thickness=2, text_thickness=2, text_scale=0.5)
-
+        
         # create sv.Point objects from the list
         start_point = sv.Point(x=line_coords[0], y=line_coords[1]) 
         end_point = sv.Point(x=line_coords[2], y=line_coords[3])
         
-        # initialize LineZone and THEN set internal attributes - need to do this for the counting
-        line_zone = sv.LineZone(
-            start=start_point, 
-            end=end_point,
-        )
-        line_zone._in_count = initial_in_count
-        line_zone._out_count = initial_out_count
+        # two line zones 
+        # car zone
+        lz_car = sv.LineZone(start=start_point, end=end_point)
+        lz_car._in_count = init_car_in
+        lz_car._out_count = init_car_out
+
+        # bike zone
+        lz_bike = sv.LineZone(start=start_point, end=end_point)
+        lz_bike._in_count = init_bike_in
+        lz_bike._out_count = init_bike_out
+        
+        # visualizer
+        lz_annotator = sv.LineZoneAnnotator(thickness=2, text_thickness=2, text_scale=0.5)
 
         cap = cv2.VideoCapture(rtsp_url)
         
@@ -88,7 +98,10 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         worker_logger.critical(f"Setup failed: {e}")
         return
 
-    vehicle_classes = [2, 3, 5, 7]
+    # define classes
+    bike_classes = [3] 
+    car_classes = [2, 5, 7]
+    all_classes = bike_classes + car_classes
     
     last_snapshot_time = time.time()
     snapshot_interval_sec = 60
@@ -108,20 +121,35 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 time.sleep(1)
                 continue
             
-        current_in_count = line_zone.in_count
-        current_out_count = line_zone.out_count
+        # snapshot current counts BEFORE processing to detect changes
+        prev_car_in = lz_car.in_count
+        prev_car_out = lz_car.out_count
+        prev_bike_in = lz_bike.in_count
+        prev_bike_out = lz_bike.out_count
 
         # 3. process frame
         try:
             results = model(frame, verbose=False)[0]
             detections = sv.Detections.from_ultralytics(results)
             
+            # filter for all valid vehicles first
             detections = detections[
-                [cls_id in vehicle_classes for cls_id in detections.class_id]
+                [cls_id in all_classes for cls_id in detections.class_id]
             ]
 
+            # track everything
             detections = tracker.update_with_detections(detections)
-            line_zone.trigger(detections)
+
+            # sub-filters for the LineZones
+            mask_car = [cls_id in car_classes for cls_id in detections.class_id]
+            dets_car = detections[mask_car]
+            
+            mask_bike = [cls_id in bike_classes for cls_id in detections.class_id]
+            dets_bike = detections[mask_bike]
+
+            # trigger BOTH zones independently
+            lz_car.trigger(dets_car)
+            lz_bike.trigger(dets_bike)
             
             # --- DEV VIEWER (only if mp4 is given in the config) ---
             if is_video_file:
@@ -131,7 +159,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 # draw boxes/labels/lines
                 debug_frame = box_annotator.annotate(debug_frame, detections)
                 debug_frame = label_annotator.annotate(debug_frame, detections, labels)
-                line_zone_annotator.annotate(debug_frame, line_counter=line_zone)
+                lz_annotator.annotate(debug_frame, line_counter=lz_car) 
                 
                 # resize to ~640px width
                 height, width = debug_frame.shape[:2]
@@ -144,35 +172,53 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
             # ---------------------------------
             
             # 4. detect and publish changes
-            if line_zone.in_count != current_in_count or line_zone.out_count != current_out_count:
+            # we check both zones. If BOTH happen in the same frame (rare), we send two messages.
+
+            # check cars
+            if lz_car.in_count != prev_car_in or lz_car.out_count != prev_car_out:
                 # determine delta
-                delta = 0
-                direction = "NONE"
                 # detect the delta as -1 and +1 and send it ot the process manager where it'll be counted
-                if line_zone.in_count > current_in_count:
-                    direction = "IN"
-                    delta = 1
-                elif line_zone.out_count > current_out_count:
-                    direction = "OUT"
-                    delta = -1
+                delta = 1 if lz_car.in_count > prev_car_in else -1
+                direction = "IN" if delta > 0 else "OUT"
                 
-                worker_logger.info(f"VEHICLE DETECTED: {direction} (Delta: {delta})")
+                worker_logger.info(f"CAR {direction} (Total: {lz_car.in_count}/{lz_car.out_count})")
 
                 # send delta payload
                 # we're not sending the total, just the change.
                 # this allows multiple cameras to simply "vote" to change the number.
+                # but now we send separely for car and bike
                 data_queue.put({
-                    "id": cam_id,
-                    "lot_id": lot_id,
-                    "type": "count_delta",
+                    "id": cam_id, "lot_id": lot_id, "type": "count_delta",
                     "data": {
                         "delta": delta,
-                        # we still send these for the "visual" history of this specific camera
-                        "local_in": line_zone.in_count,
-                        "local_out": line_zone.out_count
+                        "vehicle_type": "car",
+                        # send the full flattened state so sync func can save it all
+                        "full_state": {
+                            "car_in": lz_car.in_count, "car_out": lz_car.out_count,
+                            "bike_in": lz_bike.in_count, "bike_out": lz_bike.out_count
+                        }
                     }
                 })
+                last_snapshot_time = 0 # force snapshot update on change
+
+            # check bikes
+            if lz_bike.in_count != prev_bike_in or lz_bike.out_count != prev_bike_out:
+                delta = 1 if lz_bike.in_count > prev_bike_in else -1
+                direction = "IN" if delta > 0 else "OUT"
                 
+                worker_logger.info(f"BIKE {direction} (Total: {lz_bike.in_count}/{lz_bike.out_count})")
+
+                data_queue.put({
+                    "id": cam_id, "lot_id": lot_id, "type": "count_delta",
+                    "data": {
+                        "delta": delta,
+                        "vehicle_type": "bike",
+                        "full_state": {
+                            "car_in": lz_car.in_count, "car_out": lz_car.out_count,
+                            "bike_in": lz_bike.in_count, "bike_out": lz_bike.out_count
+                        }
+                    }
+                })
                 last_snapshot_time = 0
 
             # 5. handle snapshots
@@ -181,9 +227,12 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 if cam_config.get('force_startup_snapshot'): cam_config['force_startup_snapshot'] = False
                 
                 annotated_frame = frame.copy()
+                # lz_annotator.annotate(annotated_frame, line_counter=lz_car)
                 # line_zone_annotator.annotate(annotated_frame, line_counter=line_zone)
-                # Overlay local counts
-                cv2.putText(annotated_frame, f"LOCAL HIST - IN: {line_zone.in_count} | OUT: {line_zone.out_count}", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+                
+                # overlay local counts
+                cv2.putText(annotated_frame, f"CARS : IN {lz_car.in_count} | OUT {lz_car.out_count}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                cv2.putText(annotated_frame, f"BIKES: IN {lz_bike.in_count} | OUT {lz_bike.out_count}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
                 
                 ret_code, image_buffer = cv2.imencode(".jpg", annotated_frame)
                 if ret_code:

@@ -10,7 +10,10 @@
       "lat": 11.321,
       "long": 75.933,
       "capacities": {
-        "total": 200
+        "combined": false,
+        "car": 100,
+        "bike": 100,
+        "total": 100
       },
       "cameras": {
         "cam_01_front_gate": {

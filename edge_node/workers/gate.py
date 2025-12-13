@@ -181,9 +181,9 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 if cam_config.get('force_startup_snapshot'): cam_config['force_startup_snapshot'] = False
                 
                 annotated_frame = frame.copy()
-                line_zone_annotator.annotate(annotated_frame, line_counter=line_zone)
+                # line_zone_annotator.annotate(annotated_frame, line_counter=line_zone)
                 # Overlay local counts
-                cv2.putText(annotated_frame, f"LOCAL HIST - IN: {line_zone.in_count} | OUT: {line_zone.out_count}", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+                cv2.putText(annotated_frame, f"LOCAL HIST - IN: {line_zone.in_count} | OUT: {line_zone.out_count}", (50, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
                 
                 ret_code, image_buffer = cv2.imencode(".jpg", annotated_frame)
                 if ret_code:

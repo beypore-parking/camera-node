@@ -140,7 +140,9 @@ def get_camera_history(node_config, lot_id, cam_id):
 
 # --- firebase data sync loop ---
 def firebase_sync_loop(node_config, data_queue, stop_event):
-    node_name = node_config.get('node_name')
+    # get the current node name
+    my_node_name = node_config.get('node_name')
+
     while not stop_event.is_set():
         try:
             if not data_queue.empty():
@@ -150,7 +152,13 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                 p_type = payload.get('type')
                 data = payload.get('data')
 
-                base_ref = f"locations/{node_name}"
+                # check if this lot is assigned to a Master Node
+                lot_config = node_config['parking_lots'].get(lot_id, {})
+                target_node = lot_config.get('master_node', my_node_name)
+
+                # if master_node is set we write to THAT node's path.
+                # if not, we write to its own path.
+                base_ref = f"locations/{target_node}"
 
                 # --- delta logic handler ---
                 if p_type == 'count_delta':
@@ -169,8 +177,8 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                     
                     # check config for "Combined" vs "Separate" mode
                     # if config is missing, default to True (Combined) for safety
-                    lot_caps = node_config['parking_lots'][lot_id].get('capacities', {})
-                    is_combined = lot_caps.get('combined', True) 
+                    lot_caps = lot_config.get('capacities', {})
+                    is_combined = lot_caps.get('combined', True)
 
                     def transaction_logic(current_data):
                         if not current_data:
@@ -183,31 +191,27 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                         # MODE 1: COMBINED
                         if is_combined:
                             # both cars and bikes affect the MAIN 'net_occupancy'
-                            current_net = current_data.get('net_occupancy', 0)                        
-                            new_net = current_net + delta
-                            if new_net < 0: new_net = 0
-                            current_data['net_occupancy'] = new_net
+                            curr = current_data.get('net_occupancy', 0)
+                            new_val = curr + delta
+                            if new_val < 0: new_val = 0
+                            current_data['net_occupancy'] = new_val
                         
                         # MODE 2: SEPARATE
                         else:
-                            if v_type == 'bike':
-                                curr = current_data.get('bike_occupancy', 0)
-                                new_val = curr + delta
-                                if new_val < 0: new_val = 0
-                                current_data['bike_occupancy'] = new_val
-                            else:
-                                # cars (and trucks/buses)
-                                curr = current_data.get('car_occupancy', 0)
-                                new_val = curr + delta
-                                if new_val < 0: new_val = 0
-                                current_data['car_occupancy'] = new_val
+                            key = 'bike_occupancy' if v_type == 'bike' else 'car_occupancy'
+                            curr = current_data.get(key, 0)
+                            new_val = curr + delta
+                            if new_val < 0: new_val = 0
+                            current_data[key] = new_val
 
                         return current_data
 
                     try:
                         occ_ref.transaction(transaction_logic)
                         mode_str = "COMBINED" if is_combined else "SEPARATE"
-                        logger.info(f"Occupancy Updated [{mode_str}]. Type: {v_type}, Delta: {delta:+d}")
+                        dest_str = "LOCAL" if target_node == my_node_name else f"REMOTE->{target_node}"
+                        logger.info(f"Occupancy Updated [{mode_str}]. Destination [{dest_str}]. Type: {v_type}, Delta: {delta:+d}")
+
                     except firebase_admin.db.TransactionError as e:
                         logger.error(f"Transaction failed: {e}")
 
@@ -217,7 +221,7 @@ def firebase_sync_loop(node_config, data_queue, stop_event):
                     ts = data.get('timestamp')
                     bucket = storage.bucket()
 
-                    blob = bucket.blob(f"snapshots/{node_name}/{lot_id}/{cam_id}.jpg")
+                    blob = bucket.blob(f"snapshots/{my_node_name}/{lot_id}/{cam_id}.jpg")
                     blob.upload_from_string(image_bytes, content_type='image/jpeg')
                     blob.make_public() 
                     

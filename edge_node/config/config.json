@@ -1,14 +1,14 @@
 {
-  "node_name": "dev-1-test",
+  "node_name": "dev-arun-test",
   "firebase_db_url": "https://parking-app-cd0f0-default-rtdb.firebaseio.com/",
   "firebase_storage_bucket": "parking-app-cd0f0.appspot.com",
   "parking_lots": {
     "CCD_Parking": {
       "enabled": true,
-      "display_name": "CCD Parking",
+      "display_name": "CSED Parking",
       "type": "gate",
-      "lat": 11.321,
-      "long": 75.933,
+      "lat": 11.421,
+      "long": 75.983,
       "capacities": {
         "combined": false,
         "car": 100,

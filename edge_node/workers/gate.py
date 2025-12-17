@@ -181,7 +181,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 delta = 1 if lz_car.in_count > prev_car_in else -1
                 direction = "IN" if delta > 0 else "OUT"
                 
-                worker_logger.info(f"CAR {direction} (Total: {lz_car.in_count}/{lz_car.out_count})")
+                worker_logger.info(f"CAR {direction} (Total: In = {lz_car.in_count}, Out = {lz_car.out_count})")
 
                 # send delta payload
                 # we're not sending the total, just the change.
@@ -206,7 +206,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 delta = 1 if lz_bike.in_count > prev_bike_in else -1
                 direction = "IN" if delta > 0 else "OUT"
                 
-                worker_logger.info(f"BIKE {direction} (Total: {lz_bike.in_count}/{lz_bike.out_count})")
+                worker_logger.info(f"BIKE {direction} (Total: In = {lz_bike.in_count}, Out = {lz_bike.out_count})")
 
                 data_queue.put({
                     "id": cam_id, "lot_id": lot_id, "type": "count_delta",

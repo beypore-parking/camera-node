@@ -5,6 +5,8 @@ import signal
 from ultralytics import YOLO
 import supervision as sv
 from datetime import datetime
+from vidgear.gears import CamGear
+import os
 
 # import NodeFormatter to maintain consistent output
 from helpers.logger import NodeFormatter 
@@ -35,6 +37,14 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
     lot_id = cam_config['lot_id']
     rtsp_url = cam_config.get('rtsp_url')
     
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
+    # options for the vidgear
+    options = {
+        "CAP_PROP_BUFFERSIZE": 1,        # keep buffer tiny for low latency
+        "THREADED_QUEUE_MODE": True,     # enable the 'buffer buster' thread
+    }
+
     # check if this is a video file (ONLY ON DEV)
     is_video_file = str(rtsp_url).endswith('.mp4')
     
@@ -63,7 +73,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         model = YOLO("yolov8n.pt")
         tracker = sv.ByteTrack()
         
-         # annotators for visualization (dev Mode and snapshots)
+        # annotators for visualization (dev Mode and snapshots)
         box_annotator = sv.BoxAnnotator()
         label_annotator = sv.LabelAnnotator()
         
@@ -85,14 +95,16 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         # visualizer
         lz_annotator = sv.LineZoneAnnotator(thickness=2, text_thickness=2, text_scale=0.5)
 
-        cap = cv2.VideoCapture(rtsp_url)
+        # initialize camgear isntead of cv2
+        stream = CamGear(source=rtsp_url, **options).start()
         
-        if not cap.isOpened():
+        # check if the stream worked
+        if stream is None:
             worker_logger.error(f"Could not open source: {rtsp_url}")
-            cap.release()
             return
-            
-        worker_logger.info(f"Connected to source: {rtsp_url} (Dev Mode: {is_video_file})")
+        
+        # yay stream worked
+        worker_logger.info(f"Connected to source via CamGear: {rtsp_url} (Dev Mode: {is_video_file})")
 
     except Exception as e:
         worker_logger.critical(f"Setup failed: {e}")
@@ -108,13 +120,17 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
     
     # main loop
     while not stop_event.is_set():
-        ret, frame = cap.read()
+        # non blocking stream read
+        frame = stream.read()
         
-        if not ret:
+        # hadle frame drop or disconnect
+        if frame is None:
             if is_video_file:
                 # loop video file for dev purposes
                 worker_logger.info("Video ended, restarting loop...")
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                # re-initalize camgear for non looping streams
+                stream.stop()
+                stream = CamGear(source=rtsp_url, **options).start()
                 continue
             else:
                 worker_logger.warning("RTSP frame read failed — retrying...")
@@ -169,6 +185,23 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 
                 cv2.imshow(f"Dev: {cam_id}", debug_frame)
                 cv2.waitKey(1)
+
+            debug_frame = frame.copy()
+            labels = [f"#{tracker_id}" for tracker_id in detections.tracker_id]
+            
+            # draw boxes/labels/lines
+            debug_frame = box_annotator.annotate(debug_frame, detections)
+            debug_frame = label_annotator.annotate(debug_frame, detections, labels)
+            lz_annotator.annotate(debug_frame, line_counter=lz_car) 
+            
+            # resize to ~640px width
+            height, width = debug_frame.shape[:2]
+            new_width = 640
+            new_height = int(height * (new_width / width))
+            debug_frame = cv2.resize(debug_frame, (new_width, new_height))
+            
+            cv2.imshow(f"Dev: {cam_id}", debug_frame)
+            cv2.waitKey(1)
             # ---------------------------------
             
             # 4. detect and publish changes
@@ -248,6 +281,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
             worker_logger.error(f"Processing loop error: {e}")
             time.sleep(5)
 
-    cap.release()
+    # drop the stream
+    stream.stop()
     cv2.destroyAllWindows()
     worker_logger.info("Worker gracefully terminated.")

@@ -1,11 +1,11 @@
 {
-  "node_name": "dev-arun-test",
+  "node_name": "dev-arun-test-2",
   "firebase_db_url": "https://parking-app-cd0f0-default-rtdb.firebaseio.com/",
   "firebase_storage_bucket": "parking-app-cd0f0.appspot.com",
   "parking_lots": {
     "CCD_Parking": {
       "enabled": true,
-      "display_name": "CSED Parking",
+      "display_name": "Parking Test",
       "type": "gate",
       "lat": 11.421,
       "long": 75.983,
@@ -19,7 +19,7 @@
         "cam_01_front_gate": {
           "enabled": true,
           "role": "gate_counter",
-          "rtsp_url": "vid1.mp4",
+          "rtsp_url": "rtsp://127.0.0.1:8554/stream",
           "gate_logic": {
             "line_coords": [74, 959, 1872, 81],
             "direction": "top_to_bottom"

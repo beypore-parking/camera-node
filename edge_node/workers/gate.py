@@ -36,6 +36,7 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
     cam_id = cam_config['id']
     lot_id = cam_config['lot_id']
     rtsp_url = cam_config.get('rtsp_url')
+    dev_flag = cam_config.get('dev')
     
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
@@ -179,8 +180,8 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
             lz_car.trigger(dets_car)
             lz_bike.trigger(dets_bike)
             
-            # --- DEV VIEWER (only if mp4 is given in the config) ---
-            if is_video_file:
+            # --- DEV VIEWER (only if mp4 OR if dev_mode is set in the config) ---
+            if is_video_file or dev_flag:
                 debug_frame = frame.copy()
                 labels = [f"#{tracker_id}" for tracker_id in detections.tracker_id]
                 
@@ -197,24 +198,6 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 
                 cv2.imshow(f"Dev: {cam_id}", debug_frame)
                 cv2.waitKey(1)
-
-            # debug_frame = frame.copy()
-            # labels = [f"#{tracker_id}" for tracker_id in detections.tracker_id]
-            
-            # # draw boxes/labels/lines
-            # debug_frame = box_annotator.annotate(debug_frame, detections)
-            # debug_frame = label_annotator.annotate(debug_frame, detections, labels)
-            # lz_annotator.annotate(debug_frame, line_counter=lz_car) 
-            
-            # # resize to ~640px width
-            # height, width = debug_frame.shape[:2]
-            # new_width = 640
-            # new_height = int(height * (new_width / width))
-            # debug_frame = cv2.resize(debug_frame, (new_width, new_height))
-            
-            # cv2.imshow(f"Dev: {cam_id}", debug_frame)
-            # cv2.waitKey(1)
-            # ---------------------------------
             
             # 4. detect and publish changes
             # we check both zones. If BOTH happen in the same frame (rare), we send two messages.

@@ -18,6 +18,7 @@
       "cameras": {
         "cam_01_front_gate": {
           "enabled": true,
+          "dev": false,
           "role": "gate_counter",
           "rtsp_url": "rtsp://127.0.0.1:8554/stream",
           "gate_logic": {

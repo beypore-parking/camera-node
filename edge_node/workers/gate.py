@@ -133,8 +133,20 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 stream = CamGear(source=rtsp_url, **options).start()
                 continue
             else:
-                worker_logger.warning("RTSP frame read failed — retrying...")
-                time.sleep(1)
+                # reconnection logic for the rtsp sream
+                worker_logger.warning("RTSP stream lost — attempting to reconnect...")
+                
+                # stop the existing thread
+                stream.stop()
+                
+                time.sleep(2)
+                
+                # reiinitalize the stream
+                try:
+                    stream = CamGear(source=rtsp_url, **options).start()
+                except Exception as e:
+                    worker_logger.error(f"Reconnection attempt failed: {e}")
+                
                 continue
             
         # snapshot current counts BEFORE processing to detect changes
@@ -186,22 +198,22 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
                 cv2.imshow(f"Dev: {cam_id}", debug_frame)
                 cv2.waitKey(1)
 
-            debug_frame = frame.copy()
-            labels = [f"#{tracker_id}" for tracker_id in detections.tracker_id]
+            # debug_frame = frame.copy()
+            # labels = [f"#{tracker_id}" for tracker_id in detections.tracker_id]
             
-            # draw boxes/labels/lines
-            debug_frame = box_annotator.annotate(debug_frame, detections)
-            debug_frame = label_annotator.annotate(debug_frame, detections, labels)
-            lz_annotator.annotate(debug_frame, line_counter=lz_car) 
+            # # draw boxes/labels/lines
+            # debug_frame = box_annotator.annotate(debug_frame, detections)
+            # debug_frame = label_annotator.annotate(debug_frame, detections, labels)
+            # lz_annotator.annotate(debug_frame, line_counter=lz_car) 
             
-            # resize to ~640px width
-            height, width = debug_frame.shape[:2]
-            new_width = 640
-            new_height = int(height * (new_width / width))
-            debug_frame = cv2.resize(debug_frame, (new_width, new_height))
+            # # resize to ~640px width
+            # height, width = debug_frame.shape[:2]
+            # new_width = 640
+            # new_height = int(height * (new_width / width))
+            # debug_frame = cv2.resize(debug_frame, (new_width, new_height))
             
-            cv2.imshow(f"Dev: {cam_id}", debug_frame)
-            cv2.waitKey(1)
+            # cv2.imshow(f"Dev: {cam_id}", debug_frame)
+            # cv2.waitKey(1)
             # ---------------------------------
             
             # 4. detect and publish changes

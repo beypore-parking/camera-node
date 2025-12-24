@@ -1,5 +1,5 @@
 {
-  "node_name": "dev-arun-test-2",
+  "node_name": "dev-arun-test-6161",
   "firebase_db_url": "https://parking-app-cd0f0-default-rtdb.firebaseio.com/",
   "firebase_storage_bucket": "parking-app-cd0f0.appspot.com",
   "parking_lots": {
@@ -18,9 +18,9 @@
       "cameras": {
         "cam_01_front_gate": {
           "enabled": true,
-          "dev": false,
+          "dev": true,
           "role": "gate_counter",
-          "rtsp_url": "rtsp://127.0.0.1:8554/stream",
+          "rtsp_url": "rtsp://admin:parking_123@192.168.0.93:554/streaming/channels/102",
           "gate_logic": {
             "line_coords": [74, 959, 1872, 81],
             "direction": "top_to_bottom"
@@ -30,3 +30,4 @@
     }
   }
 }
+  

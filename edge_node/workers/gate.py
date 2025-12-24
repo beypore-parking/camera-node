@@ -7,9 +7,36 @@ import supervision as sv
 from datetime import datetime
 from vidgear.gears import CamGear
 import os
+import threading
 
 # import NodeFormatter to maintain consistent output
 from helpers.logger import NodeFormatter 
+
+class BufferlessCapture:
+    def __init__(self, rtsp_url):
+        # force TCP to prevent packet loss artifacts
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+        self.cap = cv2.VideoCapture(rtsp_url)
+        self.frame = None
+        self.status = False
+        self.thread = threading.Thread(target=self._reader, daemon=True)
+        self.thread.start()
+
+    def _reader(self):
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                self.status = False
+                break
+            self.frame = frame  # this constantly overwrites with the NEWEST frame
+            self.status = True
+
+    def read(self):
+        return self.frame
+
+    def stop(self):
+        self.status = False
+        self.cap.release()
 
 # --- setup ---
 def setup_worker_logger(cam_id):
@@ -37,7 +64,8 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
     lot_id = cam_config['lot_id']
     rtsp_url = cam_config.get('rtsp_url')
     dev_flag = cam_config.get('dev')
-    
+
+    # force tcp
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
     # options for the vidgear
@@ -97,7 +125,12 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         lz_annotator = sv.LineZoneAnnotator(thickness=2, text_thickness=2, text_scale=0.5)
 
         # initialize camgear isntead of cv2
-        stream = CamGear(source=rtsp_url, **options).start()
+        # stream = CamGear(source=rtsp_url, **options).start()
+
+        stream = BufferlessCapture(rtsp_url)
+    
+        # time   to connect
+        time.sleep(2)
         
         # check if the stream worked
         if stream is None:
@@ -128,10 +161,13 @@ def run_gate_worker(cam_config, data_queue, node_name, stop_event):
         if frame is None:
             if is_video_file:
                 # loop video file for dev purposes
-                worker_logger.info("Video ended, restarting loop...")
+                # worker_logger.info("Video ended, restarting loop...")
                 # re-initalize camgear for non looping streams
-                stream.stop()
-                stream = CamGear(source=rtsp_url, **options).start()
+                # stream.stop()
+                # stream = CamGear(source=rtsp_url, **options).start()
+                # continue
+                worker_logger.warning("Waiting for frame...")
+                time.sleep(0.1)
                 continue
             else:
                 # reconnection logic for the rtsp sream
